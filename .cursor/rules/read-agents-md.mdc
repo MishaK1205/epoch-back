@@ -1,0 +1,20 @@
+---
+description: Require reading AGENTS.md and PROJECT_CONTEXT.md before starting any task
+alwaysApply: true
+---
+
+# Read AGENTS.md and PROJECT_CONTEXT.md first
+
+Before planning or implementing **any** task in this repository:
+
+1. Read `AGENTS.md` at the repository root in full: how to work (workflow, conventions).
+2. Read `PROJECT_CONTEXT.md` at the repository root in full: what exists (every
+   endpoint, data model, business rule, configuration, test, and known gap).
+3. Follow the mandatory workflow in `AGENTS.md` (explore, plan, implement, verify,
+   update docs, report).
+4. Apply its conventions for NestJS structure, ESM `.js` imports, DTO validation,
+   Swagger docs, auth/security, config, error handling, and testing.
+
+If a request conflicts with either file, ask the user before deviating. When you change
+behaviour, update `PROJECT_CONTEXT.md` (including its change history) in the same change;
+when you introduce a new convention, update `AGENTS.md`.
