@@ -227,6 +227,17 @@ describe('ArticlesService', () => {
     expect(articleModel.find).not.toHaveBeenCalled();
   });
 
+  it('notifies deletion listeners after deleting an article', async () => {
+    const listener = { onArticleDeleted: vi.fn().mockResolvedValue(undefined) };
+    service.registerDeletionListener(listener);
+    const id = stored._id.toString();
+
+    await service.remove(id, actor(authorId, Role.Moderator));
+
+    expect(stored.deleteOne).toHaveBeenCalled();
+    expect(listener.onArticleDeleted).toHaveBeenCalledWith(id);
+  });
+
   it('filters managed articles by category id, scoped to the moderator', async () => {
     await service.listManaged(
       { page: 1, limit: 20, categoryId },

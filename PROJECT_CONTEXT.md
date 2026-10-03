@@ -13,8 +13,9 @@ change history at the bottom).
 A backend for a website where **moderators and admins write articles** about different
 topics, and the public reads them.
 
-- **Users** register themselves and get the `user` role. Users can log in, but currently
-  have no extra abilities beyond reading public content.
+- **Users** register themselves and get the `user` role. Besides reading public content,
+  every logged-in user can keep a personal **saved (read later)** list and a **read**
+  list of published articles.
 - **Moderators** write articles (draft, then publish), upload images, and manage only
   their own articles and images.
 - **Admins** do everything moderators do, can edit or delete anyone's articles and
@@ -47,7 +48,8 @@ flowchart LR
 | `AuthModule` | `src/auth/` | `UsersModule`, `JwtModule` (global) | — |
 | `CategoriesModule` | `src/categories/` | Mongoose `Category` model | `CategoriesService` |
 | `ImagesModule` | `src/images/` | Mongoose `Image` model, `MulterModule` | `ImagesService` |
-| `ArticlesModule` | `src/articles/` | `CategoriesModule`, `ImagesModule`, `UsersModule` | — |
+| `ArticlesModule` | `src/articles/` | `CategoriesModule`, `ImagesModule`, `UsersModule` | `ArticlesService` |
+| `ReadingListModule` | `src/reading-list/` | `ArticlesModule`, Mongoose `ReadingListEntry` model | — |
 
 Dependencies only flow one way. `CategoriesService` and `ImagesService` need to know
 whether articles still use a category or image. They don't import articles; instead,
@@ -55,6 +57,12 @@ whether articles still use a category or image. They don't import articles; inst
 registers itself in `onModuleInit()` via `registerUsageChecker()`. If no checker is
 registered (e.g. a misconfigured test), those services throw
 `Error('... has not been registered')` instead of silently allowing deletes.
+
+The opposite direction works the same way. Modules that reference articles implement
+`ArticleDeletionListener` (`src/articles/interfaces/`) and call
+`ArticlesService.registerDeletionListener()` in `onModuleInit()`. After an article is
+deleted, `ArticlesService.remove()` awaits `onArticleDeleted(id)` on every listener.
+Listeners are optional; `ReadingListService` is currently the only one.
 
 ### Bootstrap (`src/main.ts`, `src/app.setup.ts`)
 
@@ -175,8 +183,21 @@ Extra indexes: `{ status: 1, publishedAt: -1 }`, plus a text index on
 `{ title (weight 5), plainText (weight 1) }` with `default_language: 'none'` (no English
 stemming, so Georgian text is handled correctly).
 
+### `readinglistentries` (`src/reading-list/schemas/reading-list-entry.schema.ts`)
+
+| Field | Type | Rules |
+| --- | --- | --- |
+| `user` | ObjectId → User | required |
+| `article` | ObjectId → Article | required, indexed (for cleanup on article delete) |
+| `list` | `'saved' \| 'read'` | required |
+
+Indexes: **unique** `{ user, list, article }` (an article appears at most once per list)
+and `{ user, list, createdAt: -1 }` for listing. `createdAt` is returned as `addedAt`.
+
 ```mermaid
 erDiagram
+  User ||--o{ ReadingListEntry : keeps
+  Article ||--o{ ReadingListEntry : "saved / read"
   User ||--o{ Article : writes
   User ||--o{ Image : uploads
   Category ||--o{ Article : groups
@@ -452,6 +473,43 @@ name.
 
 Response: `[{ "name": "middle ages", "count": 7 }]`.
 
+### 4.8 Reading list (`src/reading-list/`): all Bearer
+
+Every logged-in user, whatever the role, has two independent personal lists: **saved**
+(read later) and **read**. The user is always taken from the token (`@CurrentUser().sub`),
+so nobody can see or change another user's lists. `:id` is the **article id**.
+
+| Method | Path | Success | Behaviour |
+| --- | --- | --- | --- |
+| GET | `/me/saved-articles` | `200` | `page`, `limit`; newest saved first |
+| PUT | `/me/saved-articles/:id` | `204` | save a published article |
+| DELETE | `/me/saved-articles/:id` | `204` | remove from saved |
+| GET | `/me/read-articles` | `200` | `page`, `limit`; most recently marked first |
+| PUT | `/me/read-articles/:id` | `204` | mark a published article as read |
+| DELETE | `/me/read-articles/:id` | `204` | mark as unread |
+
+List response (`PaginatedReadingListResponseDto`):
+
+```json
+{ "items": [{ "article": { "...": "ArticleSummaryDto" }, "addedAt": "..." }], "total": 1, "page": 1, "limit": 20 }
+```
+
+Rules:
+- `PUT` only accepts **published** articles; drafts and unknown ids return
+  `404 Article not found`. A malformed id returns `400 id must be a mongodb id`.
+- `PUT` is **idempotent**: adding an article that is already in the list returns `204`
+  and keeps the original `addedAt`. Concurrent duplicates are caught by the unique index.
+- `DELETE` is idempotent too: removing an article that isn't in the list returns `204`.
+- The two lists are independent. Marking an article as read does **not** remove it from
+  saved.
+- Articles that are unpublished later stay stored but are **hidden** from the lists and
+  excluded from `total`. They reappear if the article is republished.
+- Deleting an article removes it from every user's lists (`ArticleDeletionListener`).
+- Listing loads the user's entry ids (one query), keeps those whose article is published
+  (one query), paginates in memory, and then builds summaries for that page only. This
+  keeps `total` exact and the order by `addedAt`, but it reads every entry id of the
+  list per request (see known gaps).
+
 ---
 
 ## 5. Permissions matrix
@@ -461,6 +519,7 @@ Response: `[{ "name": "middle ages", "count": 7 }]`.
 | Register / log in | yes | — | — | — |
 | `GET /auth/me` | — | yes | yes | yes |
 | Read categories, published articles, tags | yes | yes | yes | yes |
+| Own saved / read lists (`/me/...`) | — | yes | yes | yes |
 | Create, update or delete categories | — | — | — | yes |
 | Upload images; list own images; view any image | — | — | yes | yes |
 | Edit alt text or delete an image | — | — | own | any |
@@ -508,7 +567,7 @@ Multer (uploads) and `file-type` (magic-byte detection) come with
 
 ## 8. Tests
 
-Run with `npm test`: 10 files, 52 tests, all passing as of 2026-10-03.
+Run with `npm test`: 11 files, 59 tests, all passing as of 2026-10-04.
 
 | Spec | Covers |
 | --- | --- |
@@ -521,7 +580,8 @@ Run with `npm test`: 10 files, 52 tests, all passing as of 2026-10-03.
 | `src/categories/categories.service.spec.ts` | create with slug, duplicate 409, delete in use 409, delete missing 404 |
 | `src/images/images.service.spec.ts` | non-owner delete 403, in-use delete 409, admin delete, URL/filename parsing (including path-traversal rejection) |
 | `src/articles/article-content.service.spec.ts` | strips scripts/handlers/`javascript:`/iframes, keeps Quill classes and safe styles, `rel=noopener`, image URL rewrite, rejects external/base64 images, plain text and excerpt, empty content |
-| `src/articles/articles.service.spec.ts` | draft creation, unknown category, missing content images, non-owner 403, admin edit, slug stability after publish, `publishedAt` set once, unknown category filter, `categoryId` filter (public, slug/id mismatch, managed scoped to the moderator) |
+| `src/articles/articles.service.spec.ts` | draft creation, unknown category, missing content images, non-owner 403, admin edit, slug stability after publish, `publishedAt` set once, unknown category filter, `categoryId` filter (public, slug/id mismatch, managed scoped to the moderator), deletion listeners notified |
+| `src/reading-list/reading-list.service.spec.ts` | upsert, unpublished/missing article 404, duplicate-key race treated as success, other errors rethrown, hidden unpublished entries with exact `total` and pagination, cleanup on article delete |
 
 `test/app.e2e-spec.ts` (`npm run test:e2e`) needs a running MongoDB. It hasn't been run
 yet. Every feature was also verified manually against the live dev server with a full
@@ -536,6 +596,14 @@ cleanup).
 Angular frontend. It contains every endpoint, the TypeScript interfaces, the services to
 generate, and the validation limits. **Whenever an endpoint, field, validation limit or
 error message changes, update that file too.**
+
+`docs/ANGULAR_READING_LIST_PROMPT.md` is a standalone prompt for adding the saved/read
+lists (section 4.8) to an Angular app that already has the base client. Keep it in sync
+with the reading-list endpoints.
+
+`docs/ANGULAR_PRODUCTION_PROMPT.md` tells the frontend AI how to point the production
+build at the deployed API (`https://api.epoch.ge`, frontend on Vercel at
+`https://epoch.ge`). Update it if the production hosts change.
 
 - Send `Authorization: Bearer <accessToken>` on protected calls. Get the role from
   `user.role` in the login/register response or from `/auth/me`.
@@ -565,6 +633,10 @@ Not implemented yet. Ask the user before assuming any of these:
 - Scheduled publishing.
 - Moving an article between categories is allowed, but there is no bulk move for
   deleting a category that still has articles.
+- Reading list: no endpoint to check whether one specific article is saved/read (the
+  client must load the lists), no size cap per list, and listing reads every entry id of
+  the list per request, which is fine for personal lists but not for huge ones. Read
+  state is set explicitly by the client; nothing is marked read automatically.
 
 ---
 
@@ -587,3 +659,6 @@ categories, images and articles created during verification were deleted, and
 | 2026-10-01 | Created this file (`PROJECT_CONTEXT.md`). |
 | 2026-10-01 | Added `docs/ANGULAR_CLIENT_PROMPT.md` (prompt for generating the Angular API client). |
 | 2026-10-03 | `categoryId` query filter on `GET /articles` and `GET /articles/manage`. |
+| 2026-10-04 | Deployed to Railway at `https://api.epoch.ge`. Added `docs/ANGULAR_PRODUCTION_PROMPT.md` (prompt for pointing the Angular production build at the deployed API). |
+| 2026-10-04 | Reading list for logged-in users: `/me/saved-articles` and `/me/read-articles` (GET list, PUT add, DELETE remove), new `readinglistentries` collection, `ArticleDeletionListener` so deleting an article cleans up the lists. `ArticlesModule` now exports `ArticlesService`. |
+| 2026-10-04 | Added `docs/ANGULAR_READING_LIST_PROMPT.md` (frontend prompt for the reading-list feature). |

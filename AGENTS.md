@@ -100,6 +100,7 @@ src/
   categories/                  # article categories (admin-managed)
   images/                      # uploads stored on disk, served at /uploads
   articles/                    # articles, content sanitizing, GET /tags
+  reading-list/                # per-user saved / read article lists under /me
   <feature>/                   # e.g. auth/, users/
     <feature>.module.ts
     <feature>.controller.ts    # HTTP layer only
@@ -120,11 +121,14 @@ test/
 - A module only exports the providers other modules actually need. Never import
   another module's schema model directly; go through its exported service.
 - **No circular module imports** (they break under ESM). Dependencies flow one way:
-  `articles` → `categories`, `images`, `users`. When a lower module needs information
-  from a higher one (e.g. "is this category/image still used by an article?"), it defines
-  a small interface (`CategoryUsageChecker`, `ImageUsageChecker`) plus a
-  `registerUsageChecker()` method, and the higher module registers itself in
-  `onModuleInit`. Follow this pattern instead of `forwardRef`.
+ `reading-list` → `articles` → `categories`, `images`, `users`. When a lower module needs
+ information from a higher one (e.g. "is this category/image still used by an article?"),
+ it defines a small interface (`CategoryUsageChecker`, `ImageUsageChecker`) plus a
+ `registerUsageChecker()` method, and the higher module registers itself in
+ `onModuleInit`. Follow this pattern instead of `forwardRef`. The same applies to
+ cleanup: a module that stores article references implements `ArticleDeletionListener`
+ and calls `ArticlesService.registerDeletionListener()` so its rows are removed when an
+ article is deleted.
 - Build responses that reference other features with batched lookups through their
   services (`findSummariesByIds`, `findUsernamesByIds`), one query per feature per
   request, not `populate()` and not one query per item.
@@ -256,7 +260,9 @@ and confirm the endpoint, its schemas, and its auth lock icon appear correctly.
   `RolesGuard` would still require a user for them. Put `@Roles` on each protected route.
 - Current permissions: categories are admin-only to write; images and articles are
   written by moderators and admins, where moderators manage only their own and admins
-  manage everything. Public endpoints only ever expose **published** articles.
+  manage everything. Public endpoints only ever expose **published** articles. Any
+ logged-in user manages their own saved/read lists under `/me`; per-user data always
+ comes from `@CurrentUser().sub`, never from a user id in the URL.
 
 ### Uploads and article content
 
@@ -379,5 +385,11 @@ rules for each endpoint are in `PROJECT_CONTEXT.md`, section 4.
 | POST   | `/articles/:id/publish` | Owner/Admin | Publish; `publishedAt` set on first publish only |
 | POST   | `/articles/:id/unpublish` | Owner/Admin | Back to draft                     |
 | GET    | `/tags`          | Public | Tags of published articles with counts; `q` prefix, `limit` |
+| GET    | `/me/saved-articles` | Bearer | Your saved (read later) articles, newest first; `page`, `limit` |
+| PUT    | `/me/saved-articles/:id` | Bearer | Save a published article (idempotent, 204) |
+| DELETE | `/me/saved-articles/:id` | Bearer | Remove from saved (idempotent, 204) |
+| GET    | `/me/read-articles` | Bearer | Articles you marked as read, newest first; `page`, `limit` |
+| PUT    | `/me/read-articles/:id` | Bearer | Mark a published article as read (idempotent, 204) |
+| DELETE | `/me/read-articles/:id` | Bearer | Mark as unread (idempotent, 204) |
 
 Keep this table in sync when you add, change, or remove endpoints.

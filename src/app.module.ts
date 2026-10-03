@@ -11,6 +11,7 @@ import { ImagesModule } from './images/images.module.js';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard.js';
 import { RolesGuard } from './common/guards/roles.guard.js';
 import { validateEnv } from './config/env.validation.js';
+import { ReadingListModule } from './reading-list/reading-list.module.js';
 import { UsersModule } from './users/users.module.js';
 
 @Module({
@@ -27,6 +28,7 @@ import { UsersModule } from './users/users.module.js';
     CategoriesModule,
     ImagesModule,
     ArticlesModule,
+    ReadingListModule,
   ],
   controllers: [AppController],
   // Guard order matters: JwtAuthGuard sets request.user before RolesGuard reads it.

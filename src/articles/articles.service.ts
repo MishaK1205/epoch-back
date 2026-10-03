@@ -27,6 +27,7 @@ import { PaginatedArticlesResponseDto } from './dto/paginated-articles-response.
 import { TagResponseDto } from './dto/tag-response.dto.js';
 import { UpdateArticleDto } from './dto/update-article.dto.js';
 import { ArticleStatus } from './enums/article-status.enum.js';
+import type { ArticleDeletionListener } from './interfaces/article-deletion-listener.interface.js';
 import { Article, ArticleDocument } from './schemas/article.schema.js';
 
 /** Slugs that would collide with static routes under /articles. */
@@ -37,6 +38,8 @@ const SLUG_ATTEMPTS = 5;
 export class ArticlesService
   implements OnModuleInit, CategoryUsageChecker, ImageUsageChecker
 {
+  private readonly deletionListeners: ArticleDeletionListener[] = [];
+
   constructor(
     @InjectModel(Article.name) private readonly articleModel: Model<Article>,
     private readonly contentService: ArticleContentService,
@@ -48,6 +51,11 @@ export class ArticlesService
   onModuleInit(): void {
     this.categoriesService.registerUsageChecker(this);
     this.imagesService.registerUsageChecker(this);
+  }
+
+  /** Lets modules that reference articles clean up; avoids a circular import. */
+  registerDeletionListener(listener: ArticleDeletionListener): void {
+    this.deletionListeners.push(listener);
   }
 
   async listPublished(
@@ -190,6 +198,9 @@ export class ArticlesService
     const article = await this.getOrThrow(id);
     assertOwnerOrAdmin(actor, article.author.toString());
     await article.deleteOne();
+    await Promise.all(
+      this.deletionListeners.map((listener) => listener.onArticleDeleted(id)),
+    );
   }
 
   async publish(id: string, actor: JwtPayload): Promise<ArticleResponseDto> {
@@ -250,6 +261,40 @@ export class ArticlesService
       $or: [{ coverImage: imageId }, { contentImages: imageId }],
     });
     return used !== null;
+  }
+
+  async isPublished(id: string): Promise<boolean> {
+    const found = await this.articleModel.exists({
+      _id: id,
+      status: ArticleStatus.Published,
+    });
+    return found !== null;
+  }
+
+  /** Returns the subset of `ids` that belong to published articles. */
+  async findPublishedIds(ids: string[]): Promise<Set<string>> {
+    const articles = await this.articleModel
+      .find({
+        _id: { $in: [...new Set(ids)] },
+        status: ArticleStatus.Published,
+      })
+      .select('_id')
+      .lean();
+    return new Set(articles.map((article) => article._id.toString()));
+  }
+
+  async findPublishedSummariesByIds(
+    ids: string[],
+  ): Promise<Map<string, ArticleSummaryDto>> {
+    const articles = await this.articleModel
+      .find({
+        _id: { $in: [...new Set(ids)] },
+        status: ArticleStatus.Published,
+      })
+      .select('-content')
+      .exec();
+    const summaries = await this.toResponses(articles, false);
+    return new Map(summaries.map((summary) => [summary.id, summary]));
   }
 
   private async paginate(

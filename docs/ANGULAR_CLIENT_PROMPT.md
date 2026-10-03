@@ -205,6 +205,12 @@ export interface Tag {
   name: string;
   count: number; // number of published articles with this tag
 }
+
+/** An entry in the current user's saved or read list. */
+export interface ReadingListItem {
+  article: ArticleSummary; // always a published article
+  addedAt: string;         // when it was saved / marked as read
+}
 ```
 
 ## 5. Request interfaces (bodies and query params)
@@ -420,6 +426,28 @@ Article rules the client must respect:
 
 Use it for tag autocomplete in the editor (`q` = what the user typed) and for tag clouds.
 
+### 6.8 `ReadingListService` (`/me`): any logged-in user
+
+Two independent personal lists: **saved** (read later) and **read**. `:id` is the
+**article id** (`ArticleSummary.id`), not the slug. The lists always belong to the
+token's user.
+
+| Method | Signature | HTTP | Success | Errors / notes |
+| --- | --- | --- | --- | --- |
+| listSaved | `listSaved(query?: PaginationQuery): Observable<Paginated<ReadingListItem>>` | `GET /me/saved-articles?page&limit` | 200, newest saved first | — |
+| save | `save(articleId: string): Observable<void>` | `PUT /me/saved-articles/:id` with **no body** | **204** | 404 `Article not found` (also drafts); 400 bad id. Saving twice is fine. |
+| unsave | `unsave(articleId: string): Observable<void>` | `DELETE /me/saved-articles/:id` | 204 | 400 bad id. Not an error if it wasn't saved. |
+| listRead | `listRead(query?: PaginationQuery): Observable<Paginated<ReadingListItem>>` | `GET /me/read-articles?page&limit` | 200, most recently marked first | — |
+| markRead | `markRead(articleId: string): Observable<void>` | `PUT /me/read-articles/:id` with **no body** | **204** | 404; 400. Marking twice is fine. |
+| markUnread | `markUnread(articleId: string): Observable<void>` | `DELETE /me/read-articles/:id` | 204 | 400 |
+
+`PaginationQuery` is `{ page?: number; limit?: number }`. Marking an article as read does
+**not** remove it from saved; call `unsave()` too if the UI wants that. Articles that get
+unpublished disappear from both lists (and from `total`). There is no endpoint that
+returns the state of one article, so to show "saved"/"read" toggles, load the lists (e.g.
+with `limit=100`) and keep a `Set` of article ids in a signal, updating it after each
+call.
+
 ## 7. Quill image upload helper
 
 Create a small helper, e.g. `createQuillImageHandler(imagesService)` in
@@ -467,6 +495,7 @@ export const API_LIMITS = {
 | Register / log in | yes | — | — | — |
 | `GET /auth/me` | — | yes | yes | yes |
 | Read categories, published articles, tags | yes | yes | yes | yes |
+| Own saved / read lists | — | yes | yes | yes |
 | Create, update or delete categories | — | — | — | yes |
 | Upload images; list own images | — | — | yes | yes (all images) |
 | Edit or delete an image | — | — | own | any |
@@ -511,6 +540,7 @@ src/app/core/
     images.service.ts
     articles.service.ts
     tags.service.ts
+    reading-list.service.ts
   editor/
     quill-image-handler.ts
 ```
@@ -538,7 +568,7 @@ src/app/core/
 - [ ] All interfaces from sections 3–5, exactly as specified
 - [ ] `ApiError`, `getApiErrorMessages`, `Paginated<T>`, `toHttpParams`, `API_LIMITS`
 - [ ] `AuthService` (with token storage, `currentUser` state, role helpers, `loadCurrentUser`), `authInterceptor`, guards
-- [ ] `UsersService`, `CategoriesService`, `ImagesService`, `ArticlesService`, `TagsService` with every method listed
+- [ ] `UsersService`, `CategoriesService`, `ImagesService`, `ArticlesService`, `TagsService`, `ReadingListService` with every method listed
 - [ ] Quill image handler helper
 - [ ] Interceptor and app initializer registered in the app config
 - [ ] `ng build` passes with no errors
