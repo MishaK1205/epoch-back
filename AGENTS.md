@@ -182,7 +182,7 @@ test/
   `new Types.ObjectId(id)` inside `$match`.
 - Public-facing documents get a `slug` generated with `slugify()` (Unicode-aware, so
   Georgian titles work). Never let a slug equal a static route segment (articles reserve
-  `manage`).
+ `manage` and `search`).
 
 ---
 
@@ -381,6 +381,7 @@ rules for each endpoint are in `PROJECT_CONTEXT.md`, section 4.
 | PATCH  | `/images/:id`    | Owner/Admin | Update `alt`                            |
 | DELETE | `/images/:id`    | Owner/Admin | Delete file + record; 409 if in use     |
 | GET    | `/articles`      | Public | Published only; `page`, `limit`, `category` (slug, category or subcategory), `categoryId`, `tag`, `author` (username), `q` (search) |
+| GET    | `/articles/search` | Public | Published only; `q` (required) partial, case-insensitive match on title and tags; `page`, `limit` |
 | GET    | `/articles/:slug` | Public | One published article with content          |
 | GET    | `/articles/manage` | Mod/Admin | Drafts + published for editing (own for moderators, all for admins); `status`, `categoryId` filters |
 | GET    | `/articles/manage/:id` | Owner/Admin | One article by id, any status      |

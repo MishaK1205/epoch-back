@@ -414,13 +414,15 @@ query per type (category and subcategory share one query), not `populate()`.
 
 Paginated lists return `{ items: ArticleSummaryDto[], total, page, limit }`.
 
-Routes are declared so that `/articles/manage` is matched before `/articles/:slug`.
+Routes are declared so that `/articles/search` and `/articles/manage` are matched before
+`/articles/:slug`.
 
 #### Public reading
 
 | Method | Path | Behaviour |
 | --- | --- | --- |
 | GET | `/articles` | **Published only**, sorted by `publishedAt` newest first. Query: `page`, `limit`, `category` (category or subcategory **slug**), `categoryId` (category or subcategory id; `400` if not an ObjectId; if both `category` and `categoryId` are sent they must match, otherwise the page is empty). A **top-level** category matches all its articles, including those in its subcategories; a **subcategory** matches only articles with that subcategory. Other params: `tag` (lowercased, exact match), `author` (**username**), `q` (full-text search over title and content, whole words, max 100). An unknown category slug/id or author returns an empty page, not an error. |
+| GET | `/articles/search` | Search box endpoint. **Published only**, sorted by `publishedAt` newest first, paginated (`page`, `limit`). `q` is required (NFC-normalized, trimmed, 1–100 chars). Matches **parts of words**, case-insensitive, in the `title` or any of the `tags` (`სებას` finds `იოჰან სებასტიან ბახი`). `q` is split on whitespace and **every** word must appear in the title or in a tag (not necessarily the same field). Regex characters are escaped. Content is not searched (use `GET /articles?q=` for whole-word search over content). `400` if `q` is missing, blank or too long. |
 | GET | `/articles/:slug` | Published article with `content`; `404 Article not found` for drafts and unknown slugs. Non-Latin slugs must be URL-encoded by the client. |
 
 #### Authoring (Mod/Admin)
@@ -448,7 +450,9 @@ Create body (`CreateArticleDto`; update uses `PartialType` of it):
 
 Slug rules (`generateUniqueSlug`):
 - `slugify(title)`, or `article` if that's empty.
-- The reserved slug `manage` always gets a random suffix (e.g. `manage-aa5101`).
+- The reserved slugs `manage` and `search` always get a random suffix (e.g.
+  `manage-aa5101`). `search` was added on 2026-10-05; an article created earlier with
+  the exact slug `search` would be shadowed by the search route.
 - If the slug is taken, it retries with a random suffix up to 5 times, then fails with
   `409 Could not generate a unique slug; try a different title`.
 - Changing the title **regenerates the slug only while the article has never been
@@ -595,7 +599,7 @@ Multer (uploads) and `file-type` (magic-byte detection) come with
 
 ## 8. Tests
 
-Run with `npm test`: 11 files, 72 tests, all passing as of 2026-10-05.
+Run with `npm test`: 11 files, 75 tests, all passing as of 2026-10-05.
 
 | Spec | Covers |
 | --- | --- |
@@ -608,7 +612,7 @@ Run with `npm test`: 11 files, 72 tests, all passing as of 2026-10-05.
 | `src/categories/categories.service.spec.ts` | create with slug, create subcategory, unknown parent 400, no sub-of-sub 400, list nests subcategories with counts, duplicate 409, delete with subcategories 409, delete in use 409, delete missing 404 |
 | `src/images/images.service.spec.ts` | non-owner delete 403, in-use delete 409, admin delete, URL/filename parsing (including path-traversal rejection) |
 | `src/articles/article-content.service.spec.ts` | strips scripts/handlers/`javascript:`/iframes, keeps Quill classes and safe styles, `rel=noopener`, image URL rewrite, rejects external/base64 images, plain text and excerpt, empty content |
-| `src/articles/articles.service.spec.ts` | draft creation, unknown category, missing content images, non-owner 403, admin edit, slug stability after publish, `publishedAt` set once, unknown category filter, `categoryId` filter (public, slug/id mismatch, unknown id, managed scoped to the moderator), subcategory slug filter, subcategory on create (valid, none, wrong parent, subcategory as `categoryId`), stale subcategory on category change, clearing with `null`, deletion listeners notified |
+| `src/articles/articles.service.spec.ts` | draft creation, unknown category, missing content images, non-owner 403, admin edit, slug stability after publish, `publishedAt` set once, unknown category filter, `categoryId` filter (public, slug/id mismatch, unknown id, managed scoped to the moderator), subcategory slug filter, subcategory on create (valid, none, wrong parent, subcategory as `categoryId`), stale subcategory on category change, clearing with `null`, deletion listeners notified, search (partial Georgian match on title/tags, every word required, regex escaping), reserved slug `search` |
 | `src/reading-list/reading-list.service.spec.ts` | upsert, unpublished/missing article 404, duplicate-key race treated as success, other errors rethrown, hidden unpublished entries with exact `total` and pagination, cleanup on article delete |
 
 `test/app.e2e-spec.ts` (`npm run test:e2e`) needs a running MongoDB. It hasn't been run
@@ -633,6 +637,11 @@ with the reading-list endpoints.
 Angular app to subcategories: model changes, the admin add/edit category flow, the
 add/edit article flow (dependent pickers, PATCH semantics) and display/filtering. Keep it
 in sync with the category and article rules.
+
+`docs/ANGULAR_SEARCH_PROMPT.md` is a standalone prompt for adding search to the Angular
+app: `ArticlesService.search()`, a debounced header search box with suggestions, a
+`/search?q=&page=` results page and client-side match highlighting. Keep it in sync with
+`GET /articles/search`.
 
 `docs/ANGULAR_PRODUCTION_PROMPT.md` tells the frontend AI how to point the production
 build at the deployed API (`https://api.epoch.ge`, frontend on Vercel at
@@ -663,6 +672,10 @@ Not implemented yet. Ask the user before assuming any of these:
 - Comments, likes, view counts, related articles, RSS feed, sitemap.
 - Image resizing/thumbnails; cleanup of orphaned images that no article uses.
 - Video embeds in content (iframes are stripped).
+- `GET /articles/search` uses unanchored regexes, which can't use an index, so it scans
+  all published articles. Fine at the current size; switch to MongoDB Atlas Search
+  (n-gram) or a dedicated search engine if the collection grows large. Results are
+  ordered by date, not by relevance.
 - Scheduled publishing.
 - Moving an article between categories is allowed, but there is no bulk move for
   deleting a category that still has articles.
@@ -700,3 +713,5 @@ categories, images and articles created during verification were deleted, and
 | 2026-10-04 | Added `docs/ANGULAR_READING_LIST_PROMPT.md` (frontend prompt for the reading-list feature). |
 | 2026-10-05 | Subcategories: optional `parent` on categories (one level, fixed at creation), optional `subcategory` on articles (`subcategoryId` in create/update, must belong to `categoryId`), `GET /categories` returns top-level categories with `subcategories` nested, `parent`/`subcategory` added to responses, category filters accept subcategories, delete blocked while subcategories exist. Backward compatible: no migration, existing documents read as top-level / no subcategory; new indexes `categories.parent_1` and `articles.subcategory_1` are built on startup. |
 | 2026-10-05 | Added `docs/ANGULAR_SUBCATEGORIES_PROMPT.md` (frontend prompt for the subcategory changes). |
+| 2026-10-05 | `GET /articles/search`: public, paginated partial (substring), case-insensitive search over published article titles and tags; every word of `q` must match. `search` added to the reserved article slugs. No schema changes. |
+| 2026-10-05 | Added `docs/ANGULAR_SEARCH_PROMPT.md` (frontend prompt for the search feature). |

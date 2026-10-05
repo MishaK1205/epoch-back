@@ -293,6 +293,13 @@ export interface ListArticlesQuery {
   q?: string;        // full-text search over title + content, whole words, max 100
 }
 
+// GET /articles/search  (public search box)
+export interface SearchArticlesQuery {
+  q: string;      // required, 1–100 chars; partial, case-insensitive match on title and tags
+  page?: number;
+  limit?: number;
+}
+
 // GET /articles/manage
 export interface ManageArticlesQuery {
   page?: number;
@@ -409,6 +416,7 @@ Upload details:
 | Method | Signature | HTTP | Auth | Success | Errors / notes |
 | --- | --- | --- | --- | --- | --- |
 | listPublished | `listPublished(query?: ListArticlesQuery): Observable<Paginated<ArticleSummary>>` | `GET /articles?page&limit&category&categoryId&tag&author&q` | Public | 200, newest `publishedAt` first | **published only**; an unknown category slug/id or author returns an empty page, not an error; a malformed `categoryId` returns 400 |
+| search | `search(query: SearchArticlesQuery): Observable<Paginated<ArticleSummary>>` | `GET /articles/search?q&page&limit` | Public | 200, newest `publishedAt` first | **published only**; matches **parts of words** in the title or any tag, case-insensitive (`სებას` finds `იოჰან სებასტიან ბახი`); with several words, every word must match the title or a tag; 400 if `q` is missing, blank or over 100 chars. Use this for the site search box (debounce input, skip empty queries) |
 | getBySlug | `getBySlug(slug: string): Observable<Article>` | `GET /articles/:slug` (encode the slug) | Public | 200 | 404 `Article not found` (also for drafts) |
 | listManaged | `listManaged(query?: ManageArticlesQuery): Observable<Paginated<ArticleSummary>>` | `GET /articles/manage?page&limit&status&categoryId` | Mod/Admin | 200, newest `updatedAt` first | drafts and published; moderators see **only their own**, admins see all |
 | getManaged | `getManaged(id: string): Observable<Article>` | `GET /articles/manage/:id` | Owner/Admin | 200 | 403; 404; use this to load an article (including drafts) into the editor |

@@ -34,11 +34,12 @@ import { CreateArticleDto } from './dto/create-article.dto.js';
 import { ListArticlesQueryDto } from './dto/list-articles-query.dto.js';
 import { ManageArticlesQueryDto } from './dto/manage-articles-query.dto.js';
 import { PaginatedArticlesResponseDto } from './dto/paginated-articles-response.dto.js';
+import { SearchArticlesQueryDto } from './dto/search-articles-query.dto.js';
 import { UpdateArticleDto } from './dto/update-article.dto.js';
 
 const AUTHORING_ROLES = [Role.Moderator, Role.Admin];
 
-// Static paths ('manage') are declared before ':slug' so they match first.
+// Static paths ('search', 'manage') are declared before ':slug' so they match first.
 @ApiTags('articles')
 @Controller('articles')
 export class ArticlesController {
@@ -53,6 +54,21 @@ export class ArticlesController {
     @Query() query: ListArticlesQueryDto,
   ): Promise<PaginatedArticlesResponseDto> {
     return this.articlesService.listPublished(query);
+  }
+
+  @Public()
+  @Get('search')
+  @ApiOperation({
+    summary: 'Search published articles by title and tags (partial match)',
+    description:
+      'Case-insensitive substring match: "სებას" finds "იოჰან სებასტიან ბახი". With several words, each must appear in the title or a tag. Newest first.',
+  })
+  @ApiOkResponse({ type: PaginatedArticlesResponseDto })
+  @ApiBadRequestResponse({ description: 'Missing or invalid `q`' })
+  search(
+    @Query() query: SearchArticlesQueryDto,
+  ): Promise<PaginatedArticlesResponseDto> {
+    return this.articlesService.searchPublished(query);
   }
 
   @Get('manage')

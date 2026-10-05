@@ -336,6 +336,44 @@ describe('ArticlesService', () => {
     expect(articleModel.find).not.toHaveBeenCalled();
   });
 
+  it('searches published titles and tags by partial, case-insensitive match', async () => {
+    await service.searchPublished({ page: 1, limit: 20, q: 'სებას' });
+    const filter = articleModel.find.mock.calls.at(-1)?.[0] as unknown as {
+      status: ArticleStatus;
+      $and: { $or: { title?: RegExp; tags?: RegExp }[] }[];
+    };
+    expect(filter.status).toBe(ArticleStatus.Published);
+    expect(filter.$and).toHaveLength(1);
+    const [titleClause, tagsClause] = filter.$and[0].$or;
+    expect(titleClause.title?.test('იოჰან სებასტიან ბახი')).toBe(true);
+    expect(tagsClause.tags?.test('იოჰან სებასტიან ბახი')).toBe(true);
+    expect(titleClause.title?.test('Didgori')).toBe(false);
+  });
+
+  it('requires every search word to match and escapes regex characters', async () => {
+    await service.searchPublished({ page: 1, limit: 20, q: 'ბახ  c++' });
+    const filter = articleModel.find.mock.calls.at(-1)?.[0] as unknown as {
+      $and: { $or: { title?: RegExp }[] }[];
+    };
+    expect(filter.$and).toHaveLength(2);
+    const plusPattern = filter.$and[1].$or[0].title;
+    expect(plusPattern?.test('Learning C++')).toBe(true);
+    expect(plusPattern?.test('c')).toBe(false);
+  });
+
+  it('never generates the reserved slug "search"', async () => {
+    articleModel.create.mockImplementation(async (data) => makeArticle(data));
+    await service.create(
+      { ...createDto, title: 'Search' },
+      actor(authorId, Role.Moderator),
+    );
+    expect(articleModel.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        slug: expect.stringMatching(/^search-[0-9a-f]{6}$/),
+      }),
+    );
+  });
+
   it('notifies deletion listeners after deleting an article', async () => {
     const listener = { onArticleDeleted: vi.fn().mockResolvedValue(undefined) };
     service.registerDeletionListener(listener);

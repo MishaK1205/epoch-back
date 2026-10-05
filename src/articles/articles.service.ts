@@ -25,6 +25,7 @@ import { ListArticlesQueryDto } from './dto/list-articles-query.dto.js';
 import { ListTagsQueryDto } from './dto/list-tags-query.dto.js';
 import { ManageArticlesQueryDto } from './dto/manage-articles-query.dto.js';
 import { PaginatedArticlesResponseDto } from './dto/paginated-articles-response.dto.js';
+import { SearchArticlesQueryDto } from './dto/search-articles-query.dto.js';
 import { TagResponseDto } from './dto/tag-response.dto.js';
 import { UpdateArticleDto } from './dto/update-article.dto.js';
 import { ArticleStatus } from './enums/article-status.enum.js';
@@ -32,7 +33,7 @@ import type { ArticleDeletionListener } from './interfaces/article-deletion-list
 import { Article, ArticleDocument } from './schemas/article.schema.js';
 
 /** Slugs that would collide with static routes under /articles. */
-const RESERVED_SLUGS = new Set(['manage']);
+const RESERVED_SLUGS = new Set(['manage', 'search']);
 const SLUG_ATTEMPTS = 5;
 
 @Injectable()
@@ -88,6 +89,24 @@ export class ArticlesService
       filter.$text = { $search: query.q };
     }
 
+    return this.paginate(filter, { publishedAt: -1 }, query);
+  }
+
+  /**
+   * Substring search on title and tags. Unlike the `$text` search in
+   * `listPublished`, it matches parts of words, which a text index can't do.
+   */
+  async searchPublished(
+    query: SearchArticlesQueryDto,
+  ): Promise<PaginatedArticlesResponseDto> {
+    const terms = query.q.split(/\s+/).filter(Boolean);
+    const filter: QueryFilter<Article> = {
+      status: ArticleStatus.Published,
+      $and: terms.map((term) => {
+        const pattern = new RegExp(escapeRegex(term), 'i');
+        return { $or: [{ title: pattern }, { tags: pattern }] };
+      }),
+    };
     return this.paginate(filter, { publishedAt: -1 }, query);
   }
 
