@@ -161,6 +161,11 @@ test/
 - Sensitive fields (e.g. `password`) use `select: false`. Fetch them only where needed
   with `.select('+password')`.
 - Normalize data at write time (`lowercase: true`, `trim: true`) so lookups are consistent.
+- **Production has real data** (`https://api.epoch.ge`). Schema changes must be backward
+  compatible: add new fields as optional with a `default` (usually `null`) and write
+  queries that treat a missing field like the default (`{ field: null }` matches both).
+  Don't rename or remove fields, change existing unique indexes, or run data migrations
+  without asking the user first. Response changes should be additive.
 - Use `.lean()` for read-only queries that don't need document methods.
 - **References must use `Schema.Types.ObjectId`**, not `Types.ObjectId`. With Mongoose 9,
   `type: Types.ObjectId` is silently stored as a plain **string**, which breaks
@@ -365,21 +370,21 @@ rules for each endpoint are in `PROJECT_CONTEXT.md`, section 4.
 | GET    | `/auth/me`       | Bearer | Current authenticated user's profile         |
 | GET    | `/users`         | Admin  | List users (`page`, `limit`, optional `role` filter) |
 | PATCH  | `/users/:id/role` | Admin | Set a user's role (`user`, `moderator`, `admin`) |
-| GET    | `/categories`    | Public | All categories with published-article counts |
-| GET    | `/categories/:slug` | Public | One category                              |
-| POST   | `/categories`    | Admin  | Create (`name`, `description?`)              |
-| PATCH  | `/categories/:id` | Admin | Update; renaming regenerates the slug        |
-| DELETE | `/categories/:id` | Admin | Delete; 409 if any article uses it           |
+| GET    | `/categories`    | Public | Top-level categories with `subcategories` nested and published-article counts |
+| GET    | `/categories/:slug` | Public | One category or subcategory (with `parent` / `subcategories`) |
+| POST   | `/categories`    | Admin  | Create (`name`, `description?`, `parentId?` creates a subcategory; one level) |
+| PATCH  | `/categories/:id` | Admin | Update `name`/`description`; renaming regenerates the slug; parent is fixed |
+| DELETE | `/categories/:id` | Admin | Delete; 409 if it has subcategories or any article uses it |
 | POST   | `/images`        | Mod/Admin | Upload (multipart `file`, `alt?`)         |
 | GET    | `/images`        | Mod/Admin | List (own for moderators, all for admins) |
 | GET    | `/images/:id`    | Mod/Admin | Image details                             |
 | PATCH  | `/images/:id`    | Owner/Admin | Update `alt`                            |
 | DELETE | `/images/:id`    | Owner/Admin | Delete file + record; 409 if in use     |
-| GET    | `/articles`      | Public | Published only; `page`, `limit`, `category` (slug), `categoryId`, `tag`, `author` (username), `q` (search) |
+| GET    | `/articles`      | Public | Published only; `page`, `limit`, `category` (slug, category or subcategory), `categoryId`, `tag`, `author` (username), `q` (search) |
 | GET    | `/articles/:slug` | Public | One published article with content          |
 | GET    | `/articles/manage` | Mod/Admin | Drafts + published for editing (own for moderators, all for admins); `status`, `categoryId` filters |
 | GET    | `/articles/manage/:id` | Owner/Admin | One article by id, any status      |
-| POST   | `/articles`      | Mod/Admin | Create as draft (`title`, `content`, `coverImageId`, `categoryId`, `tags?`) |
+| POST   | `/articles`      | Mod/Admin | Create as draft (`title`, `content`, `coverImageId`, `categoryId`, `subcategoryId?`, `tags?`) |
 | PATCH  | `/articles/:id`  | Owner/Admin | Update; slug changes only while never published |
 | DELETE | `/articles/:id`  | Owner/Admin | Delete                                  |
 | POST   | `/articles/:id/publish` | Owner/Admin | Publish; `publishedAt` set on first publish only |

@@ -43,6 +43,15 @@ export class Article {
   })
   category: Types.ObjectId;
 
+  /** Optional; always a child of `category`. Missing on older documents. */
+  @Prop({
+    type: MongooseSchema.Types.ObjectId,
+    ref: 'Category',
+    default: null,
+    index: true,
+  })
+  subcategory: Types.ObjectId | null;
+
   @Prop({ type: [String], default: [], index: true })
   tags: string[];
 

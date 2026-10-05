@@ -52,9 +52,22 @@ export class CreateArticleDto {
   @IsMongoId()
   coverImageId: string;
 
-  @ApiProperty({ example: '66f1c0d2a3b4c5d6e7f80913' })
+  @ApiProperty({
+    example: '66f1c0d2a3b4c5d6e7f80913',
+    description: 'Id of a top-level category.',
+  })
   @IsMongoId()
   categoryId: string;
+
+  @ApiPropertyOptional({
+    example: '66f1c0d2a3b4c5d6e7f80915',
+    nullable: true,
+    description:
+      'Optional id of a subcategory of `categoryId`. Send null on update to remove it.',
+  })
+  @IsOptional()
+  @IsMongoId()
+  subcategoryId?: string | null;
 
   @ApiPropertyOptional({
     type: [String],

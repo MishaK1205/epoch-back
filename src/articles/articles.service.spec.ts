@@ -25,6 +25,7 @@ describe('ArticlesService', () => {
     excerpt: 'x',
     coverImage: new Types.ObjectId(coverId),
     category: new Types.ObjectId(categoryId),
+    subcategory: null as Types.ObjectId | null,
     tags: [],
     author: new Types.ObjectId(authorId),
     status: ArticleStatus.Draft,
@@ -51,10 +52,17 @@ describe('ArticlesService', () => {
     }),
     countDocuments: vi.fn().mockResolvedValue(0),
   };
+  const subcategoryId = new Types.ObjectId().toString();
+  const otherCategoryId = new Types.ObjectId().toString();
+  const categoryRefs = new Map([
+    [categoryId, { id: categoryId, parentId: null }],
+    [otherCategoryId, { id: otherCategoryId, parentId: null }],
+    [subcategoryId, { id: subcategoryId, parentId: categoryId }],
+  ]);
   const categoriesService = {
     registerUsageChecker: vi.fn(),
-    exists: vi.fn().mockResolvedValue(true),
-    findIdBySlug: vi.fn(),
+    findRefsByIds: vi.fn(),
+    findRefBySlug: vi.fn(),
     findSummariesByIds: vi.fn().mockResolvedValue(new Map()),
   };
   const imagesService = {
@@ -86,6 +94,15 @@ describe('ArticlesService', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     stored = makeArticle();
+    categoriesService.findRefsByIds.mockImplementation(
+      async (ids: string[]) =>
+        new Map(
+          ids.flatMap((id) => {
+            const ref = categoryRefs.get(id);
+            return ref ? [[id, ref] as const] : [];
+          }),
+        ),
+    );
     const moduleRef = await Test.createTestingModule({
       providers: [
         ArticlesService,
@@ -125,10 +142,79 @@ describe('ArticlesService', () => {
   });
 
   it('rejects an unknown category', async () => {
-    categoriesService.exists.mockResolvedValueOnce(false);
     await expect(
-      service.create(createDto, actor(authorId, Role.Moderator)),
+      service.create(
+        { ...createDto, categoryId: new Types.ObjectId().toString() },
+        actor(authorId, Role.Moderator),
+      ),
     ).rejects.toThrow(new BadRequestException('Category does not exist'));
+  });
+
+  it('creates an article with a subcategory of its category', async () => {
+    articleModel.create.mockImplementation(async (data) => makeArticle(data));
+    await service.create(
+      { ...createDto, subcategoryId },
+      actor(authorId, Role.Moderator),
+    );
+    expect(articleModel.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: categoryId,
+        subcategory: subcategoryId,
+      }),
+    );
+  });
+
+  it('stores no subcategory when none is sent', async () => {
+    articleModel.create.mockImplementation(async (data) => makeArticle(data));
+    await service.create(createDto, actor(authorId, Role.Moderator));
+    expect(articleModel.create).toHaveBeenCalledWith(
+      expect.objectContaining({ subcategory: null }),
+    );
+  });
+
+  it('rejects a subcategory that belongs to another category', async () => {
+    await expect(
+      service.create(
+        { ...createDto, categoryId: otherCategoryId, subcategoryId },
+        actor(authorId, Role.Moderator),
+      ),
+    ).rejects.toThrow(
+      new BadRequestException(
+        'Subcategory does not belong to the selected category',
+      ),
+    );
+  });
+
+  it('rejects a subcategory sent as categoryId', async () => {
+    await expect(
+      service.create(
+        { ...createDto, categoryId: subcategoryId },
+        actor(authorId, Role.Moderator),
+      ),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it('rejects changing the category when the kept subcategory no longer matches', async () => {
+    stored = makeArticle({ subcategory: new Types.ObjectId(subcategoryId) });
+    await expect(
+      service.update(
+        stored._id.toString(),
+        { categoryId: otherCategoryId },
+        actor(authorId, Role.Moderator),
+      ),
+    ).rejects.toThrow(BadRequestException);
+    expect(stored.save).not.toHaveBeenCalled();
+  });
+
+  it('clears the subcategory when updated with null', async () => {
+    stored = makeArticle({ subcategory: new Types.ObjectId(subcategoryId) });
+    await service.update(
+      stored._id.toString(),
+      { subcategoryId: null },
+      actor(authorId, Role.Moderator),
+    );
+    expect(stored.subcategory).toBeNull();
+    expect(stored.save).toHaveBeenCalled();
   });
 
   it('rejects content images that were never uploaded', async () => {
@@ -195,7 +281,7 @@ describe('ArticlesService', () => {
   });
 
   it('returns an empty page for an unknown category slug', async () => {
-    categoriesService.findIdBySlug.mockResolvedValueOnce(null);
+    categoriesService.findRefBySlug.mockResolvedValueOnce(null);
     const result = await service.listPublished({
       page: 1,
       limit: 20,
@@ -212,10 +298,33 @@ describe('ArticlesService', () => {
     });
   });
 
-  it('returns an empty page when category slug and id disagree', async () => {
-    categoriesService.findIdBySlug.mockResolvedValueOnce(
-      new Types.ObjectId().toString(),
+  it('filters published articles by subcategory slug', async () => {
+    categoriesService.findRefBySlug.mockResolvedValueOnce(
+      categoryRefs.get(subcategoryId),
     );
+    await service.listPublished({ page: 1, limit: 20, category: 'medieval' });
+    expect(articleModel.find).toHaveBeenCalledWith({
+      status: ArticleStatus.Published,
+      subcategory: subcategoryId,
+    });
+  });
+
+  it('returns an empty page for an unknown category id', async () => {
+    articleModel.find.mockClear();
+    const result = await service.listPublished({
+      page: 1,
+      limit: 20,
+      categoryId: new Types.ObjectId().toString(),
+    });
+    expect(result.items).toEqual([]);
+    expect(articleModel.find).not.toHaveBeenCalled();
+  });
+
+  it('returns an empty page when category slug and id disagree', async () => {
+    categoriesService.findRefBySlug.mockResolvedValueOnce({
+      id: otherCategoryId,
+      parentId: null,
+    });
     articleModel.find.mockClear();
     const result = await service.listPublished({
       page: 1,

@@ -8,6 +8,7 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, QueryFilter, Types } from 'mongoose';
 import { CategoriesService } from '../categories/categories.service.js';
+import type { CategoryRef } from '../categories/interfaces/category-ref.interface.js';
 import type { CategoryUsageChecker } from '../categories/interfaces/category-usage-checker.interface.js';
 import type { JwtPayload } from '../common/interfaces/jwt-payload.interface.js';
 import { assertOwnerOrAdmin, isAdmin } from '../common/security/ownership.js';
@@ -63,19 +64,15 @@ export class ArticlesService
   ): Promise<PaginatedArticlesResponseDto> {
     const filter: QueryFilter<Article> = { status: ArticleStatus.Published };
 
-    if (query.category) {
-      const categoryId = await this.categoriesService.findIdBySlug(
+    if (query.category || query.categoryId) {
+      const category = await this.resolveCategoryFilter(
         query.category,
+        query.categoryId,
       );
-      if (
-        !categoryId ||
-        (query.categoryId && query.categoryId !== categoryId)
-      ) {
+      if (!category) {
         return emptyPage(query);
       }
-      filter.category = categoryId;
-    } else if (query.categoryId) {
-      filter.category = query.categoryId;
+      Object.assign(filter, categoryFilter(category));
     }
     if (query.author) {
       const authorId = await this.usersService.findIdByUsername(query.author);
@@ -115,7 +112,14 @@ export class ArticlesService
       filter.status = query.status;
     }
     if (query.categoryId) {
-      filter.category = query.categoryId;
+      const category = await this.resolveCategoryFilter(
+        undefined,
+        query.categoryId,
+      );
+      if (!category) {
+        return emptyPage(query);
+      }
+      Object.assign(filter, categoryFilter(category));
     }
     return this.paginate(filter, { updatedAt: -1 }, query);
   }
@@ -133,8 +137,9 @@ export class ArticlesService
     dto: CreateArticleDto,
     actor: JwtPayload,
   ): Promise<ArticleResponseDto> {
+    const subcategoryId = dto.subcategoryId ?? null;
     await Promise.all([
-      this.assertCategoryExists(dto.categoryId),
+      this.assertValidCategories(dto.categoryId, subcategoryId),
       this.assertImageExists(dto.coverImageId),
     ]);
     const content = await this.processContent(dto.content);
@@ -146,6 +151,7 @@ export class ArticlesService
         ...content,
         coverImage: dto.coverImageId,
         category: dto.categoryId,
+        subcategory: subcategoryId,
         tags: dto.tags ?? [],
         author: actor.sub,
         status: ArticleStatus.Draft,
@@ -178,9 +184,17 @@ export class ArticlesService
       await this.assertImageExists(dto.coverImageId);
       article.coverImage = new Types.ObjectId(dto.coverImageId);
     }
-    if (dto.categoryId !== undefined) {
-      await this.assertCategoryExists(dto.categoryId);
-      article.category = new Types.ObjectId(dto.categoryId);
+    if (dto.categoryId !== undefined || dto.subcategoryId !== undefined) {
+      const categoryId = dto.categoryId ?? article.category.toString();
+      const subcategoryId =
+        dto.subcategoryId !== undefined
+          ? dto.subcategoryId
+          : (article.subcategory?.toString() ?? null);
+      await this.assertValidCategories(categoryId, subcategoryId);
+      article.category = new Types.ObjectId(categoryId);
+      article.subcategory = subcategoryId
+        ? new Types.ObjectId(subcategoryId)
+        : null;
     }
     if (dto.tags !== undefined) {
       article.tags = dto.tags;
@@ -235,24 +249,25 @@ export class ArticlesService
   }
 
   async countArticles(categoryId: string): Promise<number> {
-    return this.articleModel.countDocuments({ category: categoryId });
+    return this.articleModel.countDocuments({
+      $or: [{ category: categoryId }, { subcategory: categoryId }],
+    });
   }
 
   async countPublishedArticles(
     categoryIds: string[],
   ): Promise<Map<string, number>> {
-    const rows = await this.articleModel.aggregate<{
-      _id: Types.ObjectId;
-      count: number;
-    }>([
-      {
-        $match: {
-          status: ArticleStatus.Published,
-          category: { $in: categoryIds.map((id) => new Types.ObjectId(id)) },
-        },
-      },
-      { $group: { _id: '$category', count: { $sum: 1 } } },
-    ]);
+    const ids = categoryIds.map((id) => new Types.ObjectId(id));
+    const countBy = (field: 'category' | 'subcategory') =>
+      this.articleModel.aggregate<{ _id: Types.ObjectId; count: number }>([
+        { $match: { status: ArticleStatus.Published, [field]: { $in: ids } } },
+        { $group: { _id: `$${field}`, count: { $sum: 1 } } },
+      ]);
+    // An id is either top-level (matched by `category`) or a subcategory
+    // (matched by `subcategory`), never both, so the two results don't overlap.
+    const rows = (
+      await Promise.all([countBy('category'), countBy('subcategory')])
+    ).flat();
     return new Map(rows.map((row) => [row._id.toString(), row.count]));
   }
 
@@ -365,10 +380,49 @@ export class ArticlesService
     );
   }
 
-  private async assertCategoryExists(id: string): Promise<void> {
-    if (!(await this.categoriesService.exists(id))) {
+  private async assertValidCategories(
+    categoryId: string,
+    subcategoryId: string | null,
+  ): Promise<void> {
+    const refs = await this.categoriesService.findRefsByIds(
+      subcategoryId ? [categoryId, subcategoryId] : [categoryId],
+    );
+    const category = refs.get(categoryId);
+    if (!category) {
       throw new BadRequestException('Category does not exist');
     }
+    if (category.parentId) {
+      throw new BadRequestException(
+        'categoryId must be a top-level category; send the subcategory as subcategoryId',
+      );
+    }
+    if (!subcategoryId) {
+      return;
+    }
+    const subcategory = refs.get(subcategoryId);
+    if (!subcategory) {
+      throw new BadRequestException('Subcategory does not exist');
+    }
+    if (subcategory.parentId !== categoryId) {
+      throw new BadRequestException(
+        'Subcategory does not belong to the selected category',
+      );
+    }
+  }
+
+  /** Null means nothing can match (unknown category, or slug and id disagree). */
+  private async resolveCategoryFilter(
+    slug: string | undefined,
+    id: string | undefined,
+  ): Promise<CategoryRef | null> {
+    if (slug) {
+      const category = await this.categoriesService.findRefBySlug(slug);
+      return category && (!id || id === category.id) ? category : null;
+    }
+    if (!id) {
+      return null;
+    }
+    return (await this.categoriesService.findRefsByIds([id])).get(id) ?? null;
   }
 
   private async assertImageExists(id: string): Promise<void> {
@@ -401,7 +455,11 @@ export class ArticlesService
         articles.map((article) => article.author.toString()),
       ),
       this.categoriesService.findSummariesByIds(
-        articles.map((article) => article.category.toString()),
+        articles.flatMap((article) =>
+          article.subcategory
+            ? [article.category.toString(), article.subcategory.toString()]
+            : [article.category.toString()],
+        ),
       ),
       this.imagesService.findSummariesByIds(
         articles.map((article) => article.coverImage.toString()),
@@ -418,6 +476,9 @@ export class ArticlesService
         excerpt: article.excerpt,
         coverImage: images.get(article.coverImage.toString()) ?? null,
         category: categories.get(article.category.toString()) ?? null,
+        subcategory: article.subcategory
+          ? (categories.get(article.subcategory.toString()) ?? null)
+          : null,
         tags: article.tags,
         author: username ? { id: authorId, username } : null,
         status: article.status,
@@ -435,6 +496,13 @@ function emptyPage(query: {
   limit: number;
 }): PaginatedArticlesResponseDto {
   return { items: [], total: 0, page: query.page, limit: query.limit };
+}
+
+/** A top-level category also matches the articles in its subcategories. */
+function categoryFilter(category: CategoryRef): QueryFilter<Article> {
+  return category.parentId
+    ? { subcategory: category.id }
+    : { category: category.id };
 }
 
 function escapeRegex(value: string): string {

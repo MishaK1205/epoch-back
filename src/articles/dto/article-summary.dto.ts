@@ -26,6 +26,13 @@ export class ArticleSummaryDto {
   @ApiProperty({ type: CategorySummaryDto, nullable: true })
   category: CategorySummaryDto | null;
 
+  @ApiProperty({
+    type: CategorySummaryDto,
+    nullable: true,
+    description: 'Null when the article has no subcategory.',
+  })
+  subcategory: CategorySummaryDto | null;
+
   @ApiProperty({ type: [String], example: ['middle ages', 'georgia'] })
   tags: string[];
 

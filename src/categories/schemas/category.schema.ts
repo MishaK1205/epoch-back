@@ -1,5 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument } from 'mongoose';
+import { HydratedDocument, Schema as MongooseSchema, Types } from 'mongoose';
 
 @Schema({ timestamps: true })
 export class Category {
@@ -11,6 +11,19 @@ export class Category {
 
   @Prop({ trim: true })
   description?: string;
+
+  /**
+   * Set for subcategories, null for top-level categories. Documents created
+   * before subcategories existed have no field at all, which `{ parent: null }`
+   * also matches.
+   */
+  @Prop({
+    type: MongooseSchema.Types.ObjectId,
+    ref: 'Category',
+    default: null,
+    index: true,
+  })
+  parent: Types.ObjectId | null;
 
   createdAt: Date;
   updatedAt: Date;

@@ -149,6 +149,12 @@ Mongoose 9; that was a real bug here, fixed on 2026-10-01.
 | `name` | string | required, **unique**, trimmed |
 | `slug` | string | required, **unique**, generated from `name` |
 | `description` | string? | trimmed |
+| `parent` | ObjectId → Category \| null | default `null`, indexed. Set for **subcategories**, `null` for top-level categories. Only one level: a parent must itself be top-level. Fixed at creation. |
+
+Names and slugs are unique across **all** categories and subcategories (the original
+unique indexes were kept), so two parents can't both have a subcategory called
+"Medieval". Documents created before subcategories existed have no `parent` field;
+`{ parent: null }` matches them too, so they are top-level without any migration.
 
 ### `images` (`src/images/schemas/image.schema.ts`)
 
@@ -173,7 +179,8 @@ The public URL isn't stored. It is computed as `PUBLIC_BASE_URL + '/uploads/' + 
 | `excerpt` | string | plain-text summary, up to ~200 characters |
 | `coverImage` | ObjectId → Image | required, indexed |
 | `contentImages` | ObjectId[] → Image | images referenced inside `content`, recomputed whenever content changes, indexed |
-| `category` | ObjectId → Category | required, indexed |
+| `category` | ObjectId → Category | required, indexed; always a **top-level** category |
+| `subcategory` | ObjectId → Category \| null | optional, default `null`, indexed; must be a subcategory whose `parent` is `category`. Missing on articles created before 2026-10-05, which means "no subcategory". |
 | `tags` | string[] | lowercased, deduplicated, indexed |
 | `author` | ObjectId → User | required, indexed |
 | `status` | `'draft' \| 'published'` | default `draft` |
@@ -201,6 +208,8 @@ erDiagram
   User ||--o{ Article : writes
   User ||--o{ Image : uploads
   Category ||--o{ Article : groups
+  Category ||--o{ Category : "parent of"
+  Category ||--o{ Article : "subcategory of"
   Image ||--o{ Article : "cover image"
   Article }o--o{ Image : "used in content"
 ```
@@ -303,14 +312,22 @@ The current admin is `Master_Elodin`, stored as `master_elodin`, with email
 
 ### 4.4 Categories (`src/categories/`)
 
+Categories have **optional subcategories**, one level deep. A subcategory is a category
+document with `parent` set; it uses the same endpoints.
+
 **`CategoryResponseDto`:**
-`{ id, name, slug, description?, articleCount, createdAt, updatedAt }`, where
-`articleCount` counts **published** articles only.
+`{ id, name, slug, description?, parent, articleCount, createdAt, updatedAt, subcategories }`
+- `parent`: `{ id, name, slug }` for a subcategory, `null` for a top-level category.
+- `subcategories`: the subcategories (same fields, without `subcategories`), sorted by
+  name; always `[]` for a subcategory and for categories that have none.
+- `articleCount` counts **published** articles only. A top-level category counts every
+  article whose `category` is it, which **includes** the articles in its subcategories.
+  A subcategory counts the articles whose `subcategory` is it.
 
 | Method | Path | Auth | Success |
 | --- | --- | --- | --- |
-| GET | `/categories` | Public | `200` array of all categories, sorted by name |
-| GET | `/categories/:slug` | Public | `200`; `404 Category not found` |
+| GET | `/categories` | Public | `200` array of **top-level** categories sorted by name, each with `subcategories` nested (subcategories are not repeated at the top level) |
+| GET | `/categories/:slug` | Public | `200` category or subcategory; `404 Category not found` |
 | POST | `/categories` | Admin | `201` |
 | PATCH | `/categories/:id` | Admin | `200` |
 | DELETE | `/categories/:id` | Admin | `204` |
@@ -318,6 +335,12 @@ The current admin is `Master_Elodin`, stored as `master_elodin`, with email
 Create and update body:
 - `name`: trimmed, 2–50 characters; required on create, optional on update
 - `description`: trimmed, max 500, optional
+- `parentId`: **create only**, optional ObjectId of a top-level category; creates a
+  subcategory. `400 Parent category does not exist`;
+  `400 Subcategories cannot have their own subcategories` if the parent is a
+  subcategory. Sending `parentId` to PATCH returns `400 property parentId should not exist`:
+  the parent can't change, so articles can never end up with a subcategory of another
+  category. To move a subcategory, create a new one and reassign the articles.
 
 Rules:
 - `slug = slugify(name)`. If that's empty (no letters or digits), the request fails with
@@ -326,8 +349,10 @@ Rules:
   This also catches names that differ only in case or punctuation.
 - **Renaming regenerates the slug**, so the category URL changes. Updating only
   `description` keeps it.
-- Delete returns `409 Category is used by N article(s); move or delete them first` if any
-  article, draft or published, references the category, and `404` if it doesn't exist.
+- Delete returns `409 Category has N subcategory(ies); delete them first` if it has
+  subcategories, `409 Category is used by N article(s); move or delete them first` if any
+  article, draft or published, references it as `category` or `subcategory`, and `404` if
+  it doesn't exist.
 
 ### 4.5 Images (`src/images/`): all Mod/Admin
 
@@ -373,6 +398,7 @@ Non-owner moderators get `403 You can only modify your own content`.
   "id": "...", "title": "...", "slug": "...", "excerpt": "...",
   "coverImage": { "id": "...", "url": "...", "alt": "..." },
   "category": { "id": "...", "name": "...", "slug": "..." },
+  "subcategory": { "id": "...", "name": "...", "slug": "..." } | null,
   "tags": ["middle ages"],
   "author": { "id": "...", "username": "master_elodin" },
   "status": "draft" | "published",
@@ -382,8 +408,9 @@ Non-owner moderators get `403 You can only modify your own content`.
 ```
 
 **`ArticleResponseDto`** = summary + `content` (sanitized HTML, safe to render directly).
-`coverImage`, `category` and `author` are `null` if the referenced record is missing.
-They are resolved with one batched query per type, not `populate()`.
+`coverImage`, `category` and `author` are `null` if the referenced record is missing;
+`subcategory` is `null` when the article has none. They are resolved with one batched
+query per type (category and subcategory share one query), not `populate()`.
 
 Paginated lists return `{ items: ArticleSummaryDto[], total, page, limit }`.
 
@@ -393,14 +420,14 @@ Routes are declared so that `/articles/manage` is matched before `/articles/:slu
 
 | Method | Path | Behaviour |
 | --- | --- | --- |
-| GET | `/articles` | **Published only**, sorted by `publishedAt` newest first. Query: `page`, `limit`, `category` (category **slug**), `categoryId` (category id; `400` if not an ObjectId; if both `category` and `categoryId` are sent they must match, otherwise the page is empty), `tag` (lowercased, exact match), `author` (**username**), `q` (full-text search over title and content, whole words, max 100). An unknown category slug/id or author returns an empty page, not an error. |
+| GET | `/articles` | **Published only**, sorted by `publishedAt` newest first. Query: `page`, `limit`, `category` (category or subcategory **slug**), `categoryId` (category or subcategory id; `400` if not an ObjectId; if both `category` and `categoryId` are sent they must match, otherwise the page is empty). A **top-level** category matches all its articles, including those in its subcategories; a **subcategory** matches only articles with that subcategory. Other params: `tag` (lowercased, exact match), `author` (**username**), `q` (full-text search over title and content, whole words, max 100). An unknown category slug/id or author returns an empty page, not an error. |
 | GET | `/articles/:slug` | Published article with `content`; `404 Article not found` for drafts and unknown slugs. Non-Latin slugs must be URL-encoded by the client. |
 
 #### Authoring (Mod/Admin)
 
 | Method | Path | Auth | Behaviour |
 | --- | --- | --- | --- |
-| GET | `/articles/manage` | Mod/Admin | Drafts and published. Moderators see their own; admins see all. Query: `page`, `limit`, `status`, `categoryId`. Sorted by `updatedAt` newest first. |
+| GET | `/articles/manage` | Mod/Admin | Drafts and published. Moderators see their own; admins see all. Query: `page`, `limit`, `status`, `categoryId` (category or subcategory id, same matching as the public list; unknown id gives an empty page). Sorted by `updatedAt` newest first. |
 | GET | `/articles/manage/:id` | Owner/Admin | Any status, with `content`. `404` / `403`. |
 | POST | `/articles` | Mod/Admin | `201`; **always created as `draft`**; the author is the caller. |
 | PATCH | `/articles/:id` | Owner/Admin | `200`; partial update of any create field. |
@@ -415,7 +442,8 @@ Create body (`CreateArticleDto`; update uses `PartialType` of it):
 | `title` | trimmed, 3–200 chars |
 | `content` | non-empty string, max 1,000,000 chars; Quill HTML |
 | `coverImageId` | ObjectId of an existing image, otherwise `400 Cover image does not exist` |
-| `categoryId` | ObjectId of an existing category, otherwise `400 Category does not exist` |
+| `categoryId` | ObjectId of an existing **top-level** category, otherwise `400 Category does not exist`, or `400 categoryId must be a top-level category; send the subcategory as subcategoryId` |
+| `subcategoryId` | optional ObjectId (or `null`) of a subcategory of `categoryId`. `400 Subcategory does not exist`; `400 Subcategory does not belong to the selected category`. Omitted or `null` on create means no subcategory. On update: omitted keeps it, `null` removes it. When only `categoryId` changes, the kept subcategory must still belong to the new category, otherwise the same 400 (send `subcategoryId: null` or a matching one together with it). |
 | `tags` | optional; each trimmed and lowercased; empty ones removed; duplicates removed; max 10; each 1–30 chars |
 
 Slug rules (`generateUniqueSlug`):
@@ -567,7 +595,7 @@ Multer (uploads) and `file-type` (magic-byte detection) come with
 
 ## 8. Tests
 
-Run with `npm test`: 11 files, 59 tests, all passing as of 2026-10-04.
+Run with `npm test`: 11 files, 72 tests, all passing as of 2026-10-05.
 
 | Spec | Covers |
 | --- | --- |
@@ -577,10 +605,10 @@ Run with `npm test`: 11 files, 59 tests, all passing as of 2026-10-04.
 | `src/users/admin-seeder.service.spec.ts` | creates admin, promotes an existing user without touching the password, no-op if already admin |
 | `src/common/guards/roles.guard.spec.ts` | no `@Roles` passes; matching role passes; wrong role gets 403 |
 | `src/common/utils/slugify.spec.ts` | Latin, Georgian, empty, length cap, random suffix |
-| `src/categories/categories.service.spec.ts` | create with slug, duplicate 409, delete in use 409, delete missing 404 |
+| `src/categories/categories.service.spec.ts` | create with slug, create subcategory, unknown parent 400, no sub-of-sub 400, list nests subcategories with counts, duplicate 409, delete with subcategories 409, delete in use 409, delete missing 404 |
 | `src/images/images.service.spec.ts` | non-owner delete 403, in-use delete 409, admin delete, URL/filename parsing (including path-traversal rejection) |
 | `src/articles/article-content.service.spec.ts` | strips scripts/handlers/`javascript:`/iframes, keeps Quill classes and safe styles, `rel=noopener`, image URL rewrite, rejects external/base64 images, plain text and excerpt, empty content |
-| `src/articles/articles.service.spec.ts` | draft creation, unknown category, missing content images, non-owner 403, admin edit, slug stability after publish, `publishedAt` set once, unknown category filter, `categoryId` filter (public, slug/id mismatch, managed scoped to the moderator), deletion listeners notified |
+| `src/articles/articles.service.spec.ts` | draft creation, unknown category, missing content images, non-owner 403, admin edit, slug stability after publish, `publishedAt` set once, unknown category filter, `categoryId` filter (public, slug/id mismatch, unknown id, managed scoped to the moderator), subcategory slug filter, subcategory on create (valid, none, wrong parent, subcategory as `categoryId`), stale subcategory on category change, clearing with `null`, deletion listeners notified |
 | `src/reading-list/reading-list.service.spec.ts` | upsert, unpublished/missing article 404, duplicate-key race treated as success, other errors rethrown, hidden unpublished entries with exact `total` and pagination, cleanup on article delete |
 
 `test/app.e2e-spec.ts` (`npm run test:e2e`) needs a running MongoDB. It hasn't been run
@@ -600,6 +628,11 @@ error message changes, update that file too.**
 `docs/ANGULAR_READING_LIST_PROMPT.md` is a standalone prompt for adding the saved/read
 lists (section 4.8) to an Angular app that already has the base client. Keep it in sync
 with the reading-list endpoints.
+
+`docs/ANGULAR_SUBCATEGORIES_PROMPT.md` is a standalone prompt for updating an existing
+Angular app to subcategories: model changes, the admin add/edit category flow, the
+add/edit article flow (dependent pickers, PATCH semantics) and display/filtering. Keep it
+in sync with the category and article rules.
 
 `docs/ANGULAR_PRODUCTION_PROMPT.md` tells the frontend AI how to point the production
 build at the deployed API (`https://api.epoch.ge`, frontend on Vercel at
@@ -633,6 +666,9 @@ Not implemented yet. Ask the user before assuming any of these:
 - Scheduled publishing.
 - Moving an article between categories is allowed, but there is no bulk move for
   deleting a category that still has articles.
+- Subcategories: only one level; a subcategory can't be moved to another parent or
+  turned into a top-level category; subcategory names must be unique across all
+  categories (two parents can't share a subcategory name).
 - Reading list: no endpoint to check whether one specific article is saved/read (the
   client must load the lists), no size cap per list, and listing reads every entry id of
   the list per request, which is fine for personal lists but not for huge ones. Read
@@ -662,3 +698,5 @@ categories, images and articles created during verification were deleted, and
 | 2026-10-04 | Deployed to Railway at `https://api.epoch.ge`. Added `docs/ANGULAR_PRODUCTION_PROMPT.md` (prompt for pointing the Angular production build at the deployed API). |
 | 2026-10-04 | Reading list for logged-in users: `/me/saved-articles` and `/me/read-articles` (GET list, PUT add, DELETE remove), new `readinglistentries` collection, `ArticleDeletionListener` so deleting an article cleans up the lists. `ArticlesModule` now exports `ArticlesService`. |
 | 2026-10-04 | Added `docs/ANGULAR_READING_LIST_PROMPT.md` (frontend prompt for the reading-list feature). |
+| 2026-10-05 | Subcategories: optional `parent` on categories (one level, fixed at creation), optional `subcategory` on articles (`subcategoryId` in create/update, must belong to `categoryId`), `GET /categories` returns top-level categories with `subcategories` nested, `parent`/`subcategory` added to responses, category filters accept subcategories, delete blocked while subcategories exist. Backward compatible: no migration, existing documents read as top-level / no subcategory; new indexes `categories.parent_1` and `articles.subcategory_1` are built on startup. |
+| 2026-10-05 | Added `docs/ANGULAR_SUBCATEGORIES_PROMPT.md` (frontend prompt for the subcategory changes). |

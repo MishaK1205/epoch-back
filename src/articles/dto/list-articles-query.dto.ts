@@ -7,7 +7,11 @@ const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
 
 export class ListArticlesQueryDto extends PaginationQueryDto {
-  @ApiPropertyOptional({ example: 'history', description: 'Category slug.' })
+  @ApiPropertyOptional({
+    example: 'history',
+    description:
+      'Category or subcategory slug. A top-level category also matches articles in its subcategories.',
+  })
   @IsOptional()
   @Transform(trim)
   @IsString()
@@ -16,7 +20,8 @@ export class ListArticlesQueryDto extends PaginationQueryDto {
 
   @ApiPropertyOptional({
     example: '665f1c2e8b3f4a0012345678',
-    description: 'Category id. Combined with `category`, both must match.',
+    description:
+      'Category or subcategory id. Combined with `category`, both must match.',
   })
   @IsOptional()
   @IsMongoId()

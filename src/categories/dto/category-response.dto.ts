@@ -1,18 +1,11 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { CategorySummaryDto } from './category-summary.dto.js';
+import { ApiProperty } from '@nestjs/swagger';
+import { CategoryBaseResponseDto } from './category-base-response.dto.js';
 
-export class CategoryResponseDto extends CategorySummaryDto {
-  @ApiPropertyOptional({
-    example: 'Articles about historical events and people.',
+export class CategoryResponseDto extends CategoryBaseResponseDto {
+  @ApiProperty({
+    type: [CategoryBaseResponseDto],
+    description:
+      'Subcategories sorted by name; always empty for a subcategory itself.',
   })
-  description?: string;
-
-  @ApiProperty({ example: 12, description: 'Number of published articles.' })
-  articleCount: number;
-
-  @ApiProperty({ example: '2026-10-01T12:00:00.000Z' })
-  createdAt: Date;
-
-  @ApiProperty({ example: '2026-10-01T12:00:00.000Z' })
-  updatedAt: Date;
+  subcategories: CategoryBaseResponseDto[];
 }

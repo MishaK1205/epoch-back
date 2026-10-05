@@ -88,6 +88,7 @@ export interface ArticleSummary {
   excerpt: string;
   coverImage: ImageSummary | null;
   category: CategorySummary | null;
+  subcategory: CategorySummary | null;
   tags: string[];
   author: AuthorSummary | null;
   status: 'draft' | 'published'; // always 'published' in these lists

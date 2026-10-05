@@ -145,20 +145,23 @@ export interface AuthResponse {
   user: User;
 }
 
-export interface Category {
-  id: string;
-  name: string;
-  slug: string;
-  description?: string;
-  articleCount: number; // number of PUBLISHED articles in this category
-  createdAt: string;
-  updatedAt: string;
-}
-
 export interface CategorySummary {
   id: string;
   name: string;
   slug: string;
+}
+
+/** A category or a subcategory (subcategories are one level deep). */
+export interface CategoryBase extends CategorySummary {
+  description?: string;
+  parent: CategorySummary | null; // set for subcategories; null for top-level categories
+  articleCount: number;           // PUBLISHED articles; a top-level count includes its subcategories' articles
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Category extends CategoryBase {
+  subcategories: CategoryBase[];  // sorted by name; [] for subcategories and for categories without any
 }
 
 export interface ImageSummary {
@@ -187,7 +190,8 @@ export interface ArticleSummary {
   slug: string;
   excerpt: string;                     // plain text, about 200 characters, may end with '…'
   coverImage: ImageSummary | null;
-  category: CategorySummary | null;
+  category: CategorySummary | null;    // always a top-level category
+  subcategory: CategorySummary | null; // null when the article has no subcategory
   tags: string[];                      // lowercase
   author: AuthorSummary | null;
   status: ArticleStatus;
@@ -246,11 +250,12 @@ export interface UpdateRoleRequest {
 
 // POST /categories
 export interface CreateCategoryRequest {
-  name: string;         // 2–50 chars; must contain at least one letter or digit
+  name: string;         // 2–50 chars; must contain at least one letter or digit; unique across ALL categories and subcategories
   description?: string; // max 500
+  parentId?: string;    // id of a TOP-LEVEL category -> creates a subcategory of it; cannot be changed later
 }
-// PATCH /categories/:id  (all fields optional)
-export type UpdateCategoryRequest = Partial<CreateCategoryRequest>;
+// PATCH /categories/:id  (all fields optional; parentId is NOT allowed here)
+export type UpdateCategoryRequest = Partial<Omit<CreateCategoryRequest, 'parentId'>>;
 
 // PATCH /images/:id
 export interface UpdateImageRequest {
@@ -268,18 +273,21 @@ export interface CreateArticleRequest {
   title: string;        // 3–200 chars
   content: string;      // Quill HTML, non-empty, max 1,000,000 chars
   coverImageId: string; // id of an image uploaded via POST /images
-  categoryId: string;   // id of an existing category
+  categoryId: string;   // id of an existing TOP-LEVEL category
+  subcategoryId?: string | null; // optional id of a subcategory of categoryId; omit or null = none
   tags?: string[];      // max 10; each 1–30 chars; lowercased and de-duplicated by the server
 }
 // PATCH /articles/:id  (send only the fields that changed)
+// subcategoryId: omit = keep, null = remove, id = set. When changing categoryId, also send
+// subcategoryId (a matching one or null), otherwise a now-mismatched subcategory returns 400.
 export type UpdateArticleRequest = Partial<CreateArticleRequest>;
 
 // GET /articles  (public list)
 export interface ListArticlesQuery {
   page?: number;
   limit?: number;
-  category?: string; // category SLUG (not id), max 100
-  categoryId?: string; // category id (Mongo ObjectId); combined with `category`, both must match
+  category?: string; // category or subcategory SLUG (not id), max 100; a top-level category includes its subcategories' articles
+  categoryId?: string; // category or subcategory id (Mongo ObjectId); combined with `category`, both must match
   tag?: string;      // exact tag, case-insensitive, max 30
   author?: string;   // author USERNAME (not id), max 30
   q?: string;        // full-text search over title + content, whole words, max 100
@@ -290,7 +298,7 @@ export interface ManageArticlesQuery {
   page?: number;
   limit?: number;
   status?: ArticleStatus;
-  categoryId?: string; // category id (Mongo ObjectId)
+  categoryId?: string; // category or subcategory id (Mongo ObjectId)
 }
 
 // GET /tags
@@ -357,13 +365,23 @@ Create a functional `authInterceptor`:
 
 | Method | Signature | HTTP | Auth | Success | Errors |
 | --- | --- | --- | --- | --- | --- |
-| list | `list(): Observable<Category[]>` | `GET /categories` | Public | 200, **plain array** (not paginated), sorted by name | — |
-| getBySlug | `getBySlug(slug: string): Observable<Category>` | `GET /categories/:slug` (encode the slug) | Public | 200 | 404 `Category not found` |
-| create | `create(body: CreateCategoryRequest): Observable<Category>` | `POST /categories` | Admin | 201 | 400; 409 `A category with this name already exists` (also for names differing only in case or punctuation) |
-| update | `update(id: string, body: UpdateCategoryRequest): Observable<Category>` | `PATCH /categories/:id` | Admin | 200 | 400; 404; 409 |
-| delete | `delete(id: string): Observable<void>` | `DELETE /categories/:id` | Admin | 204 | 404; 409 `Category is used by N article(s); move or delete them first` |
+| list | `list(): Observable<Category[]>` | `GET /categories` | Public | 200, **plain array** (not paginated) of **top-level** categories sorted by name, each with `subcategories` nested | — |
+| getBySlug | `getBySlug(slug: string): Observable<Category>` | `GET /categories/:slug` (encode the slug) | Public | 200; works for categories and subcategories | 404 `Category not found` |
+| create | `create(body: CreateCategoryRequest): Observable<Category>` | `POST /categories` | Admin | 201 | 400 (incl. `Parent category does not exist`, `Subcategories cannot have their own subcategories`); 409 `A category with this name already exists` (also for names differing only in case or punctuation, and across subcategories) |
+| update | `update(id: string, body: UpdateCategoryRequest): Observable<Category>` | `PATCH /categories/:id` | Admin | 200 | 400 (sending `parentId` returns `property parentId should not exist`); 404; 409 |
+| delete | `delete(id: string): Observable<void>` | `DELETE /categories/:id` | Admin | 204 | 404; 409 `Category has N subcategory(ies); delete them first`; 409 `Category is used by N article(s); move or delete them first` |
 
 Renaming a category **changes its slug**. After `update()`, use the returned `slug`.
+
+Subcategories:
+- Optional and one level deep. A category may have none. A subcategory has `parent` set
+  and `subcategories: []`.
+- `list()` does **not** repeat subcategories at the top level; read them from
+  `category.subcategories`. Use top-level categories for the article `categoryId`
+  picker, and the chosen category's `subcategories` for an optional `subcategoryId`
+  picker (show "None" as the default; reset it when the category changes).
+- Filtering articles by a top-level category shows its subcategories' articles too;
+  filtering by a subcategory shows only those.
 
 ### 6.5 `ImagesService` (`/images`): Mod/Admin
 
@@ -394,7 +412,7 @@ Upload details:
 | getBySlug | `getBySlug(slug: string): Observable<Article>` | `GET /articles/:slug` (encode the slug) | Public | 200 | 404 `Article not found` (also for drafts) |
 | listManaged | `listManaged(query?: ManageArticlesQuery): Observable<Paginated<ArticleSummary>>` | `GET /articles/manage?page&limit&status&categoryId` | Mod/Admin | 200, newest `updatedAt` first | drafts and published; moderators see **only their own**, admins see all |
 | getManaged | `getManaged(id: string): Observable<Article>` | `GET /articles/manage/:id` | Owner/Admin | 200 | 403; 404; use this to load an article (including drafts) into the editor |
-| create | `create(body: CreateArticleRequest): Observable<Article>` | `POST /articles` | Mod/Admin | 201 | **always created as `draft`**; 400 validation, `Category does not exist`, `Cover image does not exist`, `Article content cannot be empty`, `Images in content must be uploaded via POST /images first (...)`, `Content references images that do not exist: ...` |
+| create | `create(body: CreateArticleRequest): Observable<Article>` | `POST /articles` | Mod/Admin | 201 | **always created as `draft`**; 400 validation, `Category does not exist`, `categoryId must be a top-level category; send the subcategory as subcategoryId`, `Subcategory does not exist`, `Subcategory does not belong to the selected category`, `Cover image does not exist`, `Article content cannot be empty`, `Images in content must be uploaded via POST /images first (...)`, `Content references images that do not exist: ...` |
 | update | `update(id: string, body: UpdateArticleRequest): Observable<Article>` | `PATCH /articles/:id` | Owner/Admin | 200 | same 400s as create; 403 `You can only modify your own content`; 404 |
 | delete | `delete(id: string): Observable<void>` | `DELETE /articles/:id` | Owner/Admin | 204 | 403; 404; does not delete the images |
 | publish | `publish(id: string): Observable<Article>` | `POST /articles/:id/publish` with **no body** | Owner/Admin | **200** | sets `status = 'published'`; sets `publishedAt` only on the first publish |

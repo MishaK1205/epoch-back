@@ -5,13 +5,15 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { isDuplicateKeyError } from '../common/utils/mongo-errors.js';
 import { slugify } from '../common/utils/slugify.js';
+import { CategoryBaseResponseDto } from './dto/category-base-response.dto.js';
 import { CategoryResponseDto } from './dto/category-response.dto.js';
 import { CategorySummaryDto } from './dto/category-summary.dto.js';
 import { CreateCategoryDto } from './dto/create-category.dto.js';
 import { UpdateCategoryDto } from './dto/update-category.dto.js';
+import type { CategoryRef } from './interfaces/category-ref.interface.js';
 import type { CategoryUsageChecker } from './interfaces/category-usage-checker.interface.js';
 import { Category, CategoryDocument } from './schemas/category.schema.js';
 
@@ -29,12 +31,22 @@ export class CategoriesService {
     this.usageChecker = checker;
   }
 
+  /** Top-level categories, each with its subcategories nested. */
   async list(): Promise<CategoryResponseDto[]> {
     const categories = await this.categoryModel.find().sort({ name: 1 }).exec();
     const counts = await this.getUsageChecker().countPublishedArticles(
       categories.map((category) => category._id.toString()),
     );
-    return categories.map((category) => this.toResponse(category, counts));
+    return categories
+      .filter((category) => !category.parent)
+      .map((category) =>
+        this.toResponse(
+          category,
+          counts,
+          null,
+          categories.filter((child) => child.parent?.equals(category._id)),
+        ),
+      );
   }
 
   async findBySlug(slug: string): Promise<CategoryResponseDto> {
@@ -42,19 +54,29 @@ export class CategoriesService {
     if (!category) {
       throw new NotFoundException('Category not found');
     }
-    const counts = await this.getUsageChecker().countPublishedArticles([
-      category._id.toString(),
-    ]);
-    return this.toResponse(category, counts);
+    return this.buildResponse(category);
   }
 
   async create(dto: CreateCategoryDto): Promise<CategoryResponseDto> {
+    const parent = dto.parentId
+      ? await this.getParentOrThrow(dto.parentId)
+      : null;
     const slug = this.buildSlug(dto.name);
     await this.assertNoConflict(dto.name, slug);
 
     try {
-      const category = await this.categoryModel.create({ ...dto, slug });
-      return this.toResponse(category, new Map());
+      const category = await this.categoryModel.create({
+        name: dto.name,
+        description: dto.description,
+        slug,
+        parent: parent?._id ?? null,
+      });
+      return this.toResponse(
+        category,
+        new Map(),
+        parent ? toSummary(parent) : null,
+        [],
+      );
     } catch (error) {
       throw this.translateDuplicateKey(error);
     }
@@ -84,11 +106,18 @@ export class CategoriesService {
     } catch (error) {
       throw this.translateDuplicateKey(error);
     }
-    const counts = await this.getUsageChecker().countPublishedArticles([id]);
-    return this.toResponse(category, counts);
+    return this.buildResponse(category);
   }
 
   async remove(id: string): Promise<void> {
+    const subcategoryCount = await this.categoryModel.countDocuments({
+      parent: id,
+    });
+    if (subcategoryCount > 0) {
+      throw new ConflictException(
+        `Category has ${subcategoryCount} subcategory(ies); delete them first`,
+      );
+    }
     const articleCount = await this.getUsageChecker().countArticles(id);
     if (articleCount > 0) {
       throw new ConflictException(
@@ -101,16 +130,22 @@ export class CategoriesService {
     }
   }
 
-  async exists(id: string): Promise<boolean> {
-    return (await this.categoryModel.exists({ _id: id })) !== null;
-  }
-
-  async findIdBySlug(slug: string): Promise<string | null> {
+  async findRefBySlug(slug: string): Promise<CategoryRef | null> {
     const category = await this.categoryModel
       .findOne({ slug })
-      .select('_id')
+      .select('parent')
       .lean();
-    return category ? category._id.toString() : null;
+    return category ? toRef(category) : null;
+  }
+
+  async findRefsByIds(ids: string[]): Promise<Map<string, CategoryRef>> {
+    const categories = await this.categoryModel
+      .find({ _id: { $in: [...new Set(ids)] } })
+      .select('parent')
+      .lean();
+    return new Map(
+      categories.map((category) => [category._id.toString(), toRef(category)]),
+    );
   }
 
   async findSummariesByIds(
@@ -126,6 +161,42 @@ export class CategoriesService {
         return [id, { id, name: category.name, slug: category.slug }];
       }),
     );
+  }
+
+  private async buildResponse(
+    category: CategoryDocument,
+  ): Promise<CategoryResponseDto> {
+    const [parent, subcategories] = category.parent
+      ? [await this.categoryModel.findById(category.parent).exec(), []]
+      : [
+          null,
+          await this.categoryModel
+            .find({ parent: category._id })
+            .sort({ name: 1 })
+            .exec(),
+        ];
+    const counts = await this.getUsageChecker().countPublishedArticles(
+      [category, ...subcategories].map((item) => item._id.toString()),
+    );
+    return this.toResponse(
+      category,
+      counts,
+      parent ? toSummary(parent) : null,
+      subcategories,
+    );
+  }
+
+  private async getParentOrThrow(id: string): Promise<CategoryDocument> {
+    const parent = await this.categoryModel.findById(id).exec();
+    if (!parent) {
+      throw new BadRequestException('Parent category does not exist');
+    }
+    if (parent.parent) {
+      throw new BadRequestException(
+        'Subcategories cannot have their own subcategories',
+      );
+    }
+    return parent;
   }
 
   private getUsageChecker(): CategoryUsageChecker {
@@ -168,16 +239,51 @@ export class CategoriesService {
   private toResponse(
     category: CategoryDocument,
     counts: Map<string, number>,
+    parent: CategorySummaryDto | null,
+    subcategories: CategoryDocument[],
   ): CategoryResponseDto {
+    const summary = toSummary(category);
+    return {
+      ...this.toBaseResponse(category, counts, parent),
+      subcategories: subcategories.map((child) =>
+        this.toBaseResponse(child, counts, summary),
+      ),
+    };
+  }
+
+  private toBaseResponse(
+    category: CategoryDocument,
+    counts: Map<string, number>,
+    parent: CategorySummaryDto | null,
+  ): CategoryBaseResponseDto {
     const id = category._id.toString();
     return {
       id,
       name: category.name,
       slug: category.slug,
       description: category.description,
+      parent,
       articleCount: counts.get(id) ?? 0,
       createdAt: category.createdAt,
       updatedAt: category.updatedAt,
     };
   }
+}
+
+function toSummary(category: CategoryDocument): CategorySummaryDto {
+  return {
+    id: category._id.toString(),
+    name: category.name,
+    slug: category.slug,
+  };
+}
+
+function toRef(category: {
+  _id: Types.ObjectId;
+  parent?: Types.ObjectId | null;
+}): CategoryRef {
+  return {
+    id: category._id.toString(),
+    parentId: category.parent ? category.parent.toString() : null,
+  };
 }

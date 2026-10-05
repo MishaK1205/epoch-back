@@ -1,4 +1,8 @@
-import { PartialType } from '@nestjs/swagger';
+import { OmitType, PartialType } from '@nestjs/swagger';
 import { CreateCategoryDto } from './create-category.dto.js';
 
-export class UpdateCategoryDto extends PartialType(CreateCategoryDto) {}
+// The parent is fixed at creation so articles never end up with a subcategory
+// that belongs to a different category.
+export class UpdateCategoryDto extends PartialType(
+  OmitType(CreateCategoryDto, ['parentId'] as const),
+) {}

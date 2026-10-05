@@ -11,7 +11,8 @@ export class ManageArticlesQueryDto extends PaginationQueryDto {
 
   @ApiPropertyOptional({
     example: '665f1c2e8b3f4a0012345678',
-    description: 'Category id.',
+    description:
+      'Category or subcategory id. A top-level category also matches articles in its subcategories.',
   })
   @IsOptional()
   @IsMongoId()
