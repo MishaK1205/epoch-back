@@ -238,7 +238,7 @@ valid ObjectId, otherwise `400`.
 {
   "accessToken": "eyJ...",
   "tokenType": "Bearer",
-  "expiresIn": 3600,
+  "expiresIn": 86400,
   "user": { "id": "...", "username": "john_doe", "email": "john@example.com", "role": "user", "createdAt": "...", "updatedAt": "..." }
 }
 ```
@@ -572,7 +572,7 @@ Validated at startup; the app refuses to start with a list of all problems.
 | `PORT` | no | 3000 | positive integer |
 | `MONGODB_URI` | yes | — | non-empty |
 | `JWT_SECRET` | yes | — | at least 32 characters |
-| `JWT_EXPIRES_IN` | no | 3600 | positive integer (seconds) |
+| `JWT_EXPIRES_IN` | no | 86400 | positive integer (seconds); 86400 is one day |
 | `ADMIN_USERNAME` | yes | — | 3–30 chars of `a-zA-Z0-9_.` (stored lowercased) |
 | `ADMIN_EMAIL` | yes | — | must contain `@` |
 | `ADMIN_PASSWORD` | yes | — | 8–72 characters |
@@ -715,3 +715,4 @@ categories, images and articles created during verification were deleted, and
 | 2026-10-05 | Added `docs/ANGULAR_SUBCATEGORIES_PROMPT.md` (frontend prompt for the subcategory changes). |
 | 2026-10-05 | `GET /articles/search`: public, paginated partial (substring), case-insensitive search over published article titles and tags; every word of `q` must match. `search` added to the reserved article slugs. No schema changes. |
 | 2026-10-05 | Added `docs/ANGULAR_SEARCH_PROMPT.md` (frontend prompt for the search feature). |
+| 2026-10-06 | Access tokens last one day: `JWT_EXPIRES_IN` default is `86400` seconds (was `3600`). Existing tokens keep the expiry they were issued with. |

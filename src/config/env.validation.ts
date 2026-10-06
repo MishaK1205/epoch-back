@@ -42,7 +42,7 @@ export function validateEnv(
     );
   }
 
-  const jwtExpiresIn = Number(config.JWT_EXPIRES_IN ?? 3600);
+  const jwtExpiresIn = Number(config.JWT_EXPIRES_IN ?? 86400);
   if (!Number.isInteger(jwtExpiresIn) || jwtExpiresIn <= 0) {
     errors.push('JWT_EXPIRES_IN must be a positive integer (seconds)');
   }

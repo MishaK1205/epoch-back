@@ -60,7 +60,7 @@ components or pages** unless I ask.
 ### Authentication
 
 - Protected endpoints need the header `Authorization: Bearer <accessToken>`.
-- There are no refresh tokens. A token is valid for `expiresIn` seconds (default 3600).
+- There are no refresh tokens. A token is valid for `expiresIn` seconds (default 86400, one day).
   After that, protected calls return 401 and the user must log in again.
 - Roles: `'user'` (everyone who registers), `'moderator'`, `'admin'`.
 - Role checks happen on the server against the database, so a role change applies

@@ -20,7 +20,7 @@ describe('AuthService', () => {
     })),
   };
   const jwtService = { signAsync: vi.fn().mockResolvedValue('signed-token') };
-  const configService = { getOrThrow: vi.fn().mockReturnValue(3600) };
+  const configService = { getOrThrow: vi.fn().mockReturnValue(86400) };
 
   const makeUser = (password = 'hashed') => ({
     _id: new Types.ObjectId(),
@@ -66,7 +66,7 @@ describe('AuthService', () => {
       expect(result).toMatchObject({
         accessToken: 'signed-token',
         tokenType: 'Bearer',
-        expiresIn: 3600,
+        expiresIn: 86400,
         user: { username: 'john_doe' },
       });
     });
