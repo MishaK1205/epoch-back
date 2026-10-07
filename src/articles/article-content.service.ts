@@ -13,12 +13,15 @@ export interface ProcessedContent {
   imageFilenames: string[];
 }
 
-/** Sanitizes Quill HTML so stored article content is safe to render as-is. */
+/** Sanitizes Quill HTML (articles, quiz questions) so it is safe to render as-is. */
 @Injectable()
 export class ArticleContentService {
   constructor(private readonly imagesService: ImagesService) {}
 
-  process(rawHtml: string): ProcessedContent {
+  process(
+    rawHtml: string,
+    emptyMessage = 'Article content cannot be empty',
+  ): ProcessedContent {
     const imageFilenames = new Set<string>();
     const rejectedImages: string[] = [];
 
@@ -104,7 +107,7 @@ export class ArticleContentService {
 
     const plainText = toPlainText(html);
     if (!plainText && imageFilenames.size === 0) {
-      throw new BadRequestException('Article content cannot be empty');
+      throw new BadRequestException(emptyMessage);
     }
 
     return {

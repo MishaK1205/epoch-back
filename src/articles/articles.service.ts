@@ -52,7 +52,10 @@ export class ArticlesService
 
   onModuleInit(): void {
     this.categoriesService.registerUsageChecker(this);
-    this.imagesService.registerUsageChecker(this);
+    this.imagesService.registerUsageChecker(
+      this,
+      'Image is used by an article; remove it from the article first',
+    );
   }
 
   /** Lets modules that reference articles clean up; avoids a circular import. */

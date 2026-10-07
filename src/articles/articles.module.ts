@@ -18,6 +18,6 @@ import { TagsController } from './tags.controller.js';
   ],
   controllers: [ArticlesController, TagsController],
   providers: [ArticlesService, ArticleContentService],
-  exports: [ArticlesService],
+  exports: [ArticlesService, ArticleContentService],
 })
 export class ArticlesModule {}

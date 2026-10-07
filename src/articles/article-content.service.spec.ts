@@ -75,4 +75,10 @@ describe('ArticleContentService', () => {
       new BadRequestException('Article content cannot be empty'),
     );
   });
+
+  it('uses a custom message for empty content when given one', () => {
+    expect(() =>
+      service.process('<p> </p>', 'Question 2 cannot be empty'),
+    ).toThrow(new BadRequestException('Question 2 cannot be empty'));
+  });
 });

@@ -101,6 +101,7 @@ src/
   images/                      # uploads stored on disk, served at /uploads
   articles/                    # articles, content sanitizing, GET /tags
   reading-list/                # per-user saved / read article lists under /me
+  what-where-when/             # admin-only quiz packages (questions are sanitized Quill HTML)
   <feature>/                   # e.g. auth/, users/
     <feature>.module.ts
     <feature>.controller.ts    # HTTP layer only
@@ -121,11 +122,13 @@ test/
 - A module only exports the providers other modules actually need. Never import
   another module's schema model directly; go through its exported service.
 - **No circular module imports** (they break under ESM). Dependencies flow one way:
- `reading-list` → `articles` → `categories`, `images`, `users`. When a lower module needs
- information from a higher one (e.g. "is this category/image still used by an article?"),
- it defines a small interface (`CategoryUsageChecker`, `ImageUsageChecker`) plus a
- `registerUsageChecker()` method, and the higher module registers itself in
- `onModuleInit`. Follow this pattern instead of `forwardRef`. The same applies to
+ `reading-list`, `what-where-when` → `articles` → `categories`, `images`, `users`. When a
+ lower module needs information from a higher one (e.g. "is this category/image still
+ used by an article?"), it defines a small interface (`CategoryUsageChecker`,
+ `ImageUsageChecker`) plus a `registerUsageChecker()` method, and the higher module
+ registers itself in `onModuleInit`. Follow this pattern instead of `forwardRef`.
+ `ImagesService` keeps a list of checkers, each registered with its own 409 message;
+ any new module that stores image references must register one. The same applies to
  cleanup: a module that stores article references implements `ArticleDeletionListener`
  and calls `ArticlesService.registerDeletionListener()` so its rows are removed when an
  article is deleted.
@@ -267,7 +270,8 @@ and confirm the endpoint, its schemas, and its auth lock icon appear correctly.
   written by moderators and admins, where moderators manage only their own and admins
   manage everything. Public endpoints only ever expose **published** articles. Any
  logged-in user manages their own saved/read lists under `/me`; per-user data always
- comes from `@CurrentUser().sub`, never from a user id in the URL.
+ comes from `@CurrentUser().sub`, never from a user id in the URL. What? Where? When?
+ packages are admin-only (class-level `@Roles(Role.Admin)`), including reads.
 
 ### Uploads and article content
 
@@ -277,7 +281,9 @@ and confirm the endpoint, its schemas, and its auth lock icon appear correctly.
   `UPLOAD_DIR` under a random UUID name. Never trust the client filename or mimetype.
 - Files are served statically at `/uploads/<file>` (set up in `configureApp`), so they
   are public by URL. Image URLs in responses are absolute, built from `PUBLIC_BASE_URL`.
-- **All article HTML goes through `ArticleContentService.process()` before saving.** It
+- **All rich-text HTML (articles, What? Where? When? questions) goes through
+ `ArticleContentService.process()` before saving.** Other modules import it from
+ `ArticlesModule` (it is exported) rather than writing their own sanitizer. It
   sanitizes with an allowlist matching Quill's output (tags, `ql-*` classes, a few safe
   styles), forces `rel="noopener noreferrer"` on `target="_blank"` links, and only allows
   `<img>` that point to our own uploads (rewritten to absolute URLs). External or base64
@@ -397,5 +403,15 @@ rules for each endpoint are in `PROJECT_CONTEXT.md`, section 4.
 | GET    | `/me/read-articles` | Bearer | Articles you marked as read, newest first; `page`, `limit` |
 | PUT    | `/me/read-articles/:id` | Bearer | Mark a published article as read (idempotent, 204) |
 | DELETE | `/me/read-articles/:id` | Bearer | Mark as unread (idempotent, 204) |
+| GET | `/what-where-when` | Admin | List quiz packages (no questions, `questionCount`), newest `date` first; `page`, `limit`, `categoryId` |
+| GET | `/what-where-when/:id` | Admin | One package with its questions |
+| POST | `/what-where-when` | Admin | Create (`name`, `authors?`, `categoryId?`, `date` YYYY-MM-DD, `questions?` of `{ question (Quill HTML), answer, comment? }`) |
+| PATCH | `/what-where-when/:id` | Admin | Update; `questions` replaces the whole list; `categoryId: null` removes the category |
+| DELETE | `/what-where-when/:id` | Admin | Delete (images kept, 204) |
+| GET | `/what-where-when-categories` | Admin | Quiz categories by name with `packageCount` (plain array) |
+| GET | `/what-where-when-categories/:id` | Admin | One quiz category |
+| POST | `/what-where-when-categories` | Admin | Create (`name` unique case-insensitive, `description?`) |
+| PATCH | `/what-where-when-categories/:id` | Admin | Update `name` / `description` |
+| DELETE | `/what-where-when-categories/:id` | Admin | Delete; 409 while packages use it |
 
 Keep this table in sync when you add, change, or remove endpoints.

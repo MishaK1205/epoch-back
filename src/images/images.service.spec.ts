@@ -21,6 +21,7 @@ describe('ImagesService', () => {
     findById: vi.fn(() => ({ exec: vi.fn().mockResolvedValue(image) })),
   };
   const usageChecker = { isImageInUse: vi.fn() };
+  const otherUsageChecker = { isImageInUse: vi.fn() };
   const env: Record<string, string> = {
     UPLOAD_DIR: 'uploads-test',
     PUBLIC_BASE_URL: 'http://localhost:3000',
@@ -39,7 +40,9 @@ describe('ImagesService', () => {
       ],
     }).compile();
     service = moduleRef.get(ImagesService);
-    service.registerUsageChecker(usageChecker);
+    service.registerUsageChecker(usageChecker, 'Image is used by an article');
+    service.registerUsageChecker(otherUsageChecker, 'Image is used elsewhere');
+    otherUsageChecker.isImageInUse.mockResolvedValue(false);
   });
 
   const moderator = (sub: string) => ({
@@ -63,7 +66,16 @@ describe('ImagesService', () => {
     usageChecker.isImageInUse.mockResolvedValue(true);
     await expect(
       service.remove(image._id.toString(), moderator(ownerId)),
-    ).rejects.toThrow(ConflictException);
+    ).rejects.toThrow(new ConflictException('Image is used by an article'));
+    expect(image.deleteOne).not.toHaveBeenCalled();
+  });
+
+  it('checks every registered usage checker before deleting', async () => {
+    usageChecker.isImageInUse.mockResolvedValue(false);
+    otherUsageChecker.isImageInUse.mockResolvedValue(true);
+    await expect(
+      service.remove(image._id.toString(), moderator(ownerId)),
+    ).rejects.toThrow(new ConflictException('Image is used elsewhere'));
     expect(image.deleteOne).not.toHaveBeenCalled();
   });
 

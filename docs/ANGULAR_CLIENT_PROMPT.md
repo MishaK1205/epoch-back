@@ -215,6 +215,44 @@ export interface ReadingListItem {
   article: ArticleSummary; // always a published article
   addedAt: string;         // when it was saved / marked as read
 }
+
+/** One question of a What? Where? When? package. */
+export interface WhatWhereWhenQuestion {
+  question: string; // sanitized HTML from Quill (may contain images); safe to render
+  answer: string;   // plain text; render with interpolation, never innerHTML
+  comment: string;  // plain text; '' when there is no comment
+}
+
+/** A category for What? Where? When? packages (separate from article categories). Admin only. */
+export interface WhatWhereWhenCategory {
+  id: string;
+  name: string;
+  description: string;  // '' when empty
+  packageCount: number; // packages in this category
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WhatWhereWhenCategorySummary {
+  id: string;
+  name: string;
+}
+
+/** A What? Where? When? package in lists (no questions). Admin only. */
+export interface WhatWhereWhenSummary {
+  id: string;
+  name: string;
+  authors: string[];
+  category: WhatWhereWhenCategorySummary | null; // null = no category
+  date: string;          // 'YYYY-MM-DD'
+  questionCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WhatWhereWhenPackage extends WhatWhereWhenSummary {
+  questions: WhatWhereWhenQuestion[]; // in the order they are asked
+}
 ```
 
 ## 5. Request interfaces (bodies and query params)
@@ -313,6 +351,38 @@ export interface ListTagsQuery {
   q?: string;     // tag prefix for autocomplete, max 30
   limit?: number; // 1–100, default 50
 }
+
+// POST /what-where-when  (admin only)
+export interface WhatWhereWhenQuestionRequest {
+  question: string; // Quill HTML, non-empty, max 100,000 chars; images only from POST /images
+  answer: string;   // 1–1000 chars, plain text
+  comment?: string; // max 5000, plain text; omitted = ''
+}
+export interface CreateWhatWhereWhenRequest {
+  name: string;       // 1–200 chars
+  authors?: string[]; // max 20; each 1–100 chars; trimmed, empty and duplicate names removed
+  categoryId?: string | null; // id from GET /what-where-when-categories; omit/null = none
+  date: string;       // 'YYYY-MM-DD', must be a real calendar date
+  questions?: WhatWhereWhenQuestionRequest[]; // max 100, in order; omitted = []
+}
+// PATCH /what-where-when/:id  (send only what changed; `questions` replaces the WHOLE list;
+// categoryId: omit = keep, null = remove, id = set)
+export type UpdateWhatWhereWhenRequest = Partial<CreateWhatWhereWhenRequest>;
+
+// GET /what-where-when
+export interface ListWhatWhereWhenQuery {
+  page?: number;
+  limit?: number;
+  categoryId?: string; // only packages in this category
+}
+
+// POST /what-where-when-categories
+export interface CreateWhatWhereWhenCategoryRequest {
+  name: string;         // 1–100 chars; unique, case-insensitive
+  description?: string; // max 500
+}
+// PATCH /what-where-when-categories/:id
+export type UpdateWhatWhereWhenCategoryRequest = Partial<CreateWhatWhereWhenCategoryRequest>;
 ```
 
 ## 6. Endpoints and the services to create
@@ -399,7 +469,7 @@ Subcategories:
 | list | `list(query?: ListImagesQuery): Observable<Paginated<UploadedImage>>` | `GET /images?page&limit` | Mod/Admin | 200 | moderators get **only their own** images; admins get all |
 | get | `get(id: string): Observable<UploadedImage>` | `GET /images/:id` | Mod/Admin | 200 | 404 `Image not found` |
 | updateAlt | `updateAlt(id: string, alt: string): Observable<UploadedImage>` | `PATCH /images/:id` with body `{ alt }` | Owner/Admin | 200 | 403 `You can only modify your own content`; 404 |
-| delete | `delete(id: string): Observable<void>` | `DELETE /images/:id` | Owner/Admin | 204 | 403; 404; 409 `Image is used by an article; remove it from the article first` |
+| delete | `delete(id: string): Observable<void>` | `DELETE /images/:id` | Owner/Admin | 204 | 403; 404; 409 `Image is used by an article; remove it from the article first` or `Image is used by a What? Where? When? package; remove it from the package first` |
 
 Upload details:
 - Build a `FormData` with the field **`file`** (exact name) and, if given, the field
@@ -474,6 +544,36 @@ returns the state of one article, so to show "saved"/"read" toggles, load the li
 with `limit=100`) and keep a `Set` of article ids in a signal, updating it after each
 call.
 
+### 6.9 `WhatWhereWhenService` (`/what-where-when`): Admin only
+
+Quiz packages for the "What? Where? When?" game. Every endpoint requires the admin role.
+
+| Method | Signature | HTTP | Success | Errors / notes |
+| --- | --- | --- | --- | --- |
+| list | `list(query?: ListWhatWhereWhenQuery): Observable<Paginated<WhatWhereWhenSummary>>` | `GET /what-where-when?page&limit&categoryId` | 200, newest `date` first | no `questions` in list items, only `questionCount` |
+| get | `get(id: string): Observable<WhatWhereWhenPackage>` | `GET /what-where-when/:id` | 200 | 404 `What? Where? When? package not found` |
+| create | `create(body: CreateWhatWhereWhenRequest): Observable<WhatWhereWhenPackage>` | `POST /what-where-when` | 201 | 400 validation (`date must be YYYY-MM-DD`, `date must be a valid date`, `questions.0.answer ...`), `Category does not exist`, `Question N cannot be empty`, `Images in content must be uploaded via POST /images first (...)`, `Questions reference images that do not exist: ...` |
+| update | `update(id: string, body: UpdateWhatWhereWhenRequest): Observable<WhatWhereWhenPackage>` | `PATCH /what-where-when/:id` | 200 | same 400s as create; 404 |
+| delete | `delete(id: string): Observable<void>` | `DELETE /what-where-when/:id` | 204 | 404; the images are kept |
+
+- The question editor uses the same Quill setup and image handler as articles (section 7).
+- Editing questions: load the package with `get()`, edit the list in the form (add,
+  remove, reorder), then send the **full** `questions` array in `update()`.
+- Render `question` with `[innerHTML]` (sanitized by the server, include Quill CSS);
+  render `answer` and `comment` as text.
+
+### 6.10 `WhatWhereWhenCategoriesService` (`/what-where-when-categories`): Admin only
+
+Categories for What? Where? When? packages. Separate from article categories.
+
+| Method | Signature | HTTP | Success | Errors / notes |
+| --- | --- | --- | --- | --- |
+| list | `list(): Observable<WhatWhereWhenCategory[]>` | `GET /what-where-when-categories` | 200, **plain array** sorted by name | — |
+| get | `get(id: string): Observable<WhatWhereWhenCategory>` | `GET /what-where-when-categories/:id` | 200 | 404 `What? Where? When? category not found` |
+| create | `create(body: CreateWhatWhereWhenCategoryRequest): Observable<WhatWhereWhenCategory>` | `POST /what-where-when-categories` | 201 | 400; 409 `A What? Where? When? category with this name already exists` (case-insensitive) |
+| update | `update(id: string, body: UpdateWhatWhereWhenCategoryRequest): Observable<WhatWhereWhenCategory>` | `PATCH /what-where-when-categories/:id` | 200 | 400; 404; 409 |
+| delete | `delete(id: string): Observable<void>` | `DELETE /what-where-when-categories/:id` | 204 | 404; 409 `Category is used by N package(s); move or delete them first` |
+
 ## 7. Quill image upload helper
 
 Create a small helper, e.g. `createQuillImageHandler(imagesService)` in
@@ -511,6 +611,17 @@ export const API_LIMITS = {
   pagination: { defaultLimit: 20, maxLimit: 100 },
   tagsQuery: { defaultLimit: 50, maxLimit: 100 },
   search: { max: 100 },
+  whatWhereWhen: {
+    name: { min: 1, max: 200 },
+    authors: { maxCount: 20, minLength: 1, maxLength: 100 },
+    date: { pattern: /^\d{4}-\d{2}-\d{2}$/ },
+    questions: { maxCount: 100 },
+    question: { max: 100_000 },
+    answer: { min: 1, max: 1000 },
+    comment: { max: 5000 },
+    categoryName: { min: 1, max: 100 },
+    categoryDescription: { max: 500 },
+  },
 } as const;
 ```
 
@@ -528,6 +639,7 @@ export const API_LIMITS = {
 | Create articles; see drafts in "manage" | — | — | own | all |
 | Edit, delete, publish or unpublish articles | — | — | own | any |
 | List users; change roles | — | — | — | yes (not their own role) |
+| Manage What? Where? When? packages and their categories | — | — | — | yes |
 
 To decide "own", compare `article.author?.id` or `image.uploadedBy` with
 `currentUser().id`.

@@ -20,8 +20,12 @@ topics, and the public reads them.
   their own articles and images.
 - **Admins** do everything moderators do, can edit or delete anyone's articles and
   images, manage categories, and change users' roles.
+- Admins also manage **What? Where? When?** quiz packages (name, authors, date and an
+  ordered list of questions with answers and comments). These are admin-only for now;
+  nothing about them is public.
 - One admin account is created automatically at startup from environment variables.
-- The frontend uses the **Quill** rich-text editor, so article content arrives as HTML.
+- The frontend uses the **Quill** rich-text editor, so article content and quiz questions
+  arrive as HTML.
 
 ---
 
@@ -48,8 +52,14 @@ flowchart LR
 | `AuthModule` | `src/auth/` | `UsersModule`, `JwtModule` (global) | — |
 | `CategoriesModule` | `src/categories/` | Mongoose `Category` model | `CategoriesService` |
 | `ImagesModule` | `src/images/` | Mongoose `Image` model, `MulterModule` | `ImagesService` |
-| `ArticlesModule` | `src/articles/` | `CategoriesModule`, `ImagesModule`, `UsersModule` | `ArticlesService` |
+| `ArticlesModule` | `src/articles/` | `CategoriesModule`, `ImagesModule`, `UsersModule` | `ArticlesService`, `ArticleContentService` |
 | `ReadingListModule` | `src/reading-list/` | `ArticlesModule`, Mongoose `ReadingListEntry` model | — |
+| `WhatWhereWhenModule` | `src/what-where-when/` | `ArticlesModule` (for `ArticleContentService`), `ImagesModule`, Mongoose `WhatWhereWhenPackage` and `WhatWhereWhenCategory` models | — |
+
+`WhatWhereWhenModule` has two services. `WhatWhereWhenCategoriesService` owns the
+categories and also reads the package model to count and guard packages (same feature, so
+no usage-checker indirection). `WhatWhereWhenService` depends on it to validate
+`categoryId` and to batch-load category summaries.
 
 Dependencies only flow one way. `CategoriesService` and `ImagesService` need to know
 whether articles still use a category or image. They don't import articles; instead,
@@ -57,6 +67,11 @@ whether articles still use a category or image. They don't import articles; inst
 registers itself in `onModuleInit()` via `registerUsageChecker()`. If no checker is
 registered (e.g. a misconfigured test), those services throw
 `Error('... has not been registered')` instead of silently allowing deletes.
+
+`ImagesService` accepts **several** usage checkers, each registered with its own 409
+message: `registerUsageChecker(checker, conflictMessage)`. Deleting an image checks them
+in registration order and fails with the first one that still uses it. `ArticlesService`
+and `WhatWhereWhenService` both register one.
 
 The opposite direction works the same way. Modules that reference articles implement
 `ArticleDeletionListener` (`src/articles/interfaces/`) and call
@@ -201,6 +216,34 @@ stemming, so Georgian text is handled correctly).
 Indexes: **unique** `{ user, list, article }` (an article appears at most once per list)
 and `{ user, list, createdAt: -1 }` for listing. `createdAt` is returned as `addedAt`.
 
+### `whatwherewhenpackages` (`src/what-where-when/schemas/what-where-when-package.schema.ts`)
+
+| Field | Type | Rules |
+| --- | --- | --- |
+| `name` | string | required, trimmed (not unique) |
+| `authors` | string[] | default `[]`; trimmed, empty and duplicate names removed |
+| `category` | ObjectId → WhatWhereWhenCategory \| null | optional, default `null`, indexed. Added on 2026-10-07 after the collection; packages without the field read as "no category" (`{ category: null }` matches both). |
+| `date` | string | required, `YYYY-MM-DD`, so string order is date order |
+| `questions` | embedded `WhatWhereWhenQuestion[]` | default `[]`, in the order they are asked; no `_id` per question |
+| `images` | ObjectId[] → Image | images used inside any question, recomputed whenever `questions` change, indexed |
+
+Embedded `WhatWhereWhenQuestion` (`what-where-when-question.schema.ts`): `question`
+(sanitized HTML, required), `answer` (plain text, required, trimmed), `comment` (plain
+text, default `''`, trimmed).
+
+Extra index: `{ date: -1, createdAt: -1 }` for listing. The collection was added on
+2026-10-07 and has no older documents.
+
+### `whatwherewhencategories` (`src/what-where-when/schemas/what-where-when-category.schema.ts`)
+
+Categories for What? Where? When? packages only. They are **separate from article
+categories** (`categories`) and have no slug and no subcategories.
+
+| Field | Type | Rules |
+| --- | --- | --- |
+| `name` | string | required, trimmed; **unique, case-insensitive** (index with collation `{ locale: 'en', strength: 2 }`) |
+| `description` | string | default `''`, trimmed |
+
 ```mermaid
 erDiagram
   User ||--o{ ReadingListEntry : keeps
@@ -212,6 +255,8 @@ erDiagram
   Category ||--o{ Article : "subcategory of"
   Image ||--o{ Article : "cover image"
   Article }o--o{ Image : "used in content"
+  WhatWhereWhenPackage }o--o{ Image : "used in questions"
+  WhatWhereWhenCategory ||--o{ WhatWhereWhenPackage : groups
 ```
 
 ---
@@ -386,7 +431,9 @@ Pipeline:
 | DELETE | `/images/:id` | Owner/Admin | `204`; deletes the record and the file on disk |
 
 Delete returns `409 Image is used by an article; remove it from the article first` if
-any article uses the image as `coverImage` or inside its content (`contentImages`).
+any article uses the image as `coverImage` or inside its content (`contentImages`), and
+`409 Image is used by a What? Where? When? package; remove it from the package first` if
+any quiz question contains it.
 Non-owner moderators get `403 You can only modify your own content`.
 
 ### 4.6 Articles (`src/articles/`)
@@ -491,6 +538,8 @@ Every time `content` is created or changed, `ArticleContentService.process()` ru
 4. **Excerpt:** the first 200 characters of the plain text, cut at a word boundary, with
    `…` appended when truncated.
 5. Content with no text and no images returns `400 Article content cannot be empty`.
+   Callers can pass their own message (`process(html, emptyMessage)`); quiz questions use
+   `Question N cannot be empty`.
 6. `ArticlesService` maps the image filenames to image ids and stores them in
    `contentImages`. A filename with no image record returns
    `400 Content references images that do not exist: ...`.
@@ -542,6 +591,73 @@ Rules:
   keeps `total` exact and the order by `addedAt`, but it reads every entry id of the
   list per request (see known gaps).
 
+### 4.9 What? Where? When? (`src/what-where-when/`): all Admin
+
+Quiz packages for the "What? Where? When?" game. `@Roles(Role.Admin)` is set on the whole
+controller; there are no public routes.
+
+**`WhatWhereWhenSummaryDto`** (lists): `{ id, name, authors, category, date, questionCount, createdAt, updatedAt }`,
+where `category` is `{ id, name }` or `null` (no category, or a category record that is
+missing). Categories are resolved with one batched query per request.
+**`WhatWhereWhenResponseDto`** = summary + `questions: [{ question, answer, comment }]`,
+in order. `question` is sanitized HTML (safe to render); `answer` and `comment` are plain
+text, and `comment` is `''` when empty.
+
+| Method | Path | Success | Behaviour |
+| --- | --- | --- | --- |
+| GET | `/what-where-when` | `200` | `page`, `limit`, optional `categoryId` (ObjectId, otherwise 400; an unknown id gives an empty page); sorted by `date` newest first, then `createdAt`; `{ items: WhatWhereWhenSummaryDto[], total, page, limit }`; questions are not loaded (aggregation projects only `questionCount`) |
+| GET | `/what-where-when/:id` | `200` | full package with questions |
+| POST | `/what-where-when` | `201` | create |
+| PATCH | `/what-where-when/:id` | `200` | partial update of any create field; `questions`, when sent, **replaces the whole list** |
+| DELETE | `/what-where-when/:id` | `204` | deletes the package; its images are kept |
+
+Create body (`CreateWhatWhereWhenDto`; update uses `PartialType` of it):
+
+| Field | Rules |
+| --- | --- |
+| `name` | trimmed, 1–200 chars |
+| `authors` | optional (default `[]`); each trimmed; empty and duplicate names removed; max 20; each 1–100 chars |
+| `categoryId` | optional ObjectId (or `null`) of a What? Where? When? category, otherwise `400 Category does not exist`. Create: omitted or `null` = none. Update: omitted keeps it, `null` removes it, an id sets it. |
+| `date` | trimmed; `YYYY-MM-DD` (`date must be YYYY-MM-DD`) and a real calendar date (`date must be a valid date`, e.g. `2026-02-30`) |
+| `questions` | optional (default `[]`); max 100; each `{ question, answer, comment? }` validated as nested objects (unknown nested fields return 400 `questions.0.property x should not exist`) |
+| `questions[].question` | non-empty string, max 100,000 chars; Quill HTML |
+| `questions[].answer` | trimmed, 1–1000 chars |
+| `questions[].comment` | optional, trimmed, max 5000 chars |
+
+Every `question` goes through `ArticleContentService.process()` (section 4.6): the same
+allowlist, the same rule that `<img>` must point at our uploads, the same rewrite to
+absolute URLs. Empty questions return `400 Question N cannot be empty` (1-based). Upload
+filenames without an image record return
+`400 Questions reference images that do not exist: ...`. The image ids of all questions
+are stored in `images`, which blocks deleting those images (section 4.5).
+
+Errors: `404 What? Where? When? package not found`, `400` for a malformed id.
+
+#### Categories (`/what-where-when-categories`): all Admin
+
+A separate route prefix (not `/what-where-when/categories`) so it can't collide with
+`/what-where-when/:id`. Same Swagger tag `what-where-when`.
+
+**`WhatWhereWhenCategoryResponseDto`:** `{ id, name, description, packageCount, createdAt, updatedAt }`;
+`description` is `''` when empty; `packageCount` counts all packages in the category.
+
+| Method | Path | Success | Behaviour |
+| --- | --- | --- | --- |
+| GET | `/what-where-when-categories` | `200` | **plain array** (not paginated), sorted by name case-insensitively, with `packageCount` (one aggregation) |
+| GET | `/what-where-when-categories/:id` | `200` | one category; `404 What? Where? When? category not found` |
+| POST | `/what-where-when-categories` | `201` | body `name` (trimmed, 1–100), `description?` (trimmed, max 500) |
+| PATCH | `/what-where-when-categories/:id` | `200` | partial update of `name` / `description` (`""` clears the description) |
+| DELETE | `/what-where-when-categories/:id` | `204` | `409 Category is used by N package(s); move or delete them first` while any package uses it |
+
+A duplicate name (case-insensitive, e.g. `spring cup` vs `Spring Cup`) returns
+`409 A What? Where? When? category with this name already exists` on create and rename.
+It is enforced by the unique index (Mongo `11000` mapped to 409), so concurrent requests
+can't create duplicates.
+
+Assigning: create the category, then send its `id` as `categoryId` when creating a
+package, or `PATCH /what-where-when/:id` with `{ "categoryId": "<id>" }`. Renaming a
+category is reflected in every package response immediately (only the id is stored).
+
 ---
 
 ## 5. Permissions matrix
@@ -559,6 +675,7 @@ Rules:
 | View drafts in manage endpoints | — | — | own | all |
 | Edit, delete, publish or unpublish articles | — | — | own | any |
 | List users, change roles | — | — | — | yes (not own role) |
+| Create, read, update or delete What? Where? When? packages and their categories | — | — | — | yes |
 
 ---
 
@@ -599,7 +716,7 @@ Multer (uploads) and `file-type` (magic-byte detection) come with
 
 ## 8. Tests
 
-Run with `npm test`: 11 files, 75 tests, all passing as of 2026-10-05.
+Run with `npm test`: 13 files, 98 tests, all passing as of 2026-10-07.
 
 | Spec | Covers |
 | --- | --- |
@@ -610,8 +727,10 @@ Run with `npm test`: 11 files, 75 tests, all passing as of 2026-10-05.
 | `src/common/guards/roles.guard.spec.ts` | no `@Roles` passes; matching role passes; wrong role gets 403 |
 | `src/common/utils/slugify.spec.ts` | Latin, Georgian, empty, length cap, random suffix |
 | `src/categories/categories.service.spec.ts` | create with slug, create subcategory, unknown parent 400, no sub-of-sub 400, list nests subcategories with counts, duplicate 409, delete with subcategories 409, delete in use 409, delete missing 404 |
-| `src/images/images.service.spec.ts` | non-owner delete 403, in-use delete 409, admin delete, URL/filename parsing (including path-traversal rejection) |
-| `src/articles/article-content.service.spec.ts` | strips scripts/handlers/`javascript:`/iframes, keeps Quill classes and safe styles, `rel=noopener`, image URL rewrite, rejects external/base64 images, plain text and excerpt, empty content |
+| `src/images/images.service.spec.ts` | non-owner delete 403, in-use delete 409 with the checker's message, every registered checker consulted, admin delete, URL/filename parsing (including path-traversal rejection) |
+| `src/articles/article-content.service.spec.ts` | strips scripts/handlers/`javascript:`/iframes, keeps Quill classes and safe styles, `rel=noopener`, image URL rewrite, rejects external/base64 images, plain text and excerpt, empty content (default and custom message) |
+| `src/what-where-when/what-where-when.service.spec.ts` | registers as image usage checker, sanitizes questions in order with per-question empty message, collects image ids, `comment` defaults to `''`, create without questions/authors, unknown images 400, update without questions keeps them, sending questions replaces them, 404 on get/update/delete, delete, image-in-use check, category assign / none / unknown 400 / keep on omit / remove with `null`, list filtered by category with category summaries |
+| `src/what-where-when/what-where-when-categories.service.spec.ts` | create with default description, duplicate name 409 on create and update, other errors rethrown, list with package counts, delete in use 409, delete unused, 404 on get/update/delete |
 | `src/articles/articles.service.spec.ts` | draft creation, unknown category, missing content images, non-owner 403, admin edit, slug stability after publish, `publishedAt` set once, unknown category filter, `categoryId` filter (public, slug/id mismatch, unknown id, managed scoped to the moderator), subcategory slug filter, subcategory on create (valid, none, wrong parent, subcategory as `categoryId`), stale subcategory on category change, clearing with `null`, deletion listeners notified, search (partial Georgian match on title/tags, every word required, regex escaping), reserved slug `search` |
 | `src/reading-list/reading-list.service.spec.ts` | upsert, unpublished/missing article 404, duplicate-key race treated as success, other errors rethrown, hidden unpublished entries with exact `total` and pagination, cleanup on article delete |
 
@@ -642,6 +761,16 @@ in sync with the category and article rules.
 app: `ArticlesService.search()`, a debounced header search box with suggestions, a
 `/search?q=&page=` results page and client-side match highlighting. Keep it in sync with
 `GET /articles/search`.
+
+`docs/ANGULAR_WHAT_WHERE_WHEN_PROMPT.md` is a standalone prompt for adding the admin
+What? Where? When? screens (section 4.9): models, service, list/editor/view pages, the
+question editor reusing the article Quill setup, and error mapping. The same endpoints are
+also summarized in `docs/ANGULAR_CLIENT_PROMPT.md` (sections 6.9 and 6.10). Keep both in
+sync.
+
+`docs/ANGULAR_WWW_CATEGORIES_PROMPT.md` is a follow-up prompt for an app that already has
+the What? Where? When? screens but not categories: the categories service and page, plus
+the category select/filter/column changes to the existing package screens.
 
 `docs/ANGULAR_PRODUCTION_PROMPT.md` tells the frontend AI how to point the production
 build at the deployed API (`https://api.epoch.ge`, frontend on Vercel at
@@ -686,6 +815,11 @@ Not implemented yet. Ask the user before assuming any of these:
   client must load the lists), no size cap per list, and listing reads every entry id of
   the list per request, which is fine for personal lists but not for huge ones. Read
   state is set explicitly by the client; nothing is marked read automatically.
+- What? Where? When?: admin-only, no public reading or playing endpoints, no search or
+  filtering of the list, no editing of a single question (the whole list is replaced),
+  and authors are free-text names, not linked to user accounts. A package has at most one
+  category; categories are flat (no subcategories) and have no slug, since nothing about
+  them is public yet.
 
 ---
 
@@ -716,3 +850,7 @@ categories, images and articles created during verification were deleted, and
 | 2026-10-05 | `GET /articles/search`: public, paginated partial (substring), case-insensitive search over published article titles and tags; every word of `q` must match. `search` added to the reserved article slugs. No schema changes. |
 | 2026-10-05 | Added `docs/ANGULAR_SEARCH_PROMPT.md` (frontend prompt for the search feature). |
 | 2026-10-06 | Access tokens last one day: `JWT_EXPIRES_IN` default is `86400` seconds (was `3600`). Existing tokens keep the expiry they were issued with. |
+| 2026-10-07 | What? Where? When? packages: admin-only CRUD at `/what-where-when` (name, authors, `YYYY-MM-DD` date, ordered questions with sanitized Quill HTML, answer, comment), new `whatwherewhenpackages` collection. `ImagesService` now accepts several usage checkers, each with its own 409 message, so images used in questions can't be deleted. `ArticleContentService` is exported and takes an optional empty-content message. No changes to existing collections. Updated `docs/ANGULAR_CLIENT_PROMPT.md`. |
+| 2026-10-07 | Added `docs/ANGULAR_WHAT_WHERE_WHEN_PROMPT.md` (frontend prompt for the What? Where? When? admin screens). |
+| 2026-10-07 | What? Where? When? categories: admin-only CRUD at `/what-where-when-categories` (new `whatwherewhencategories` collection, case-insensitive unique name, `packageCount`, delete blocked while used). Packages get optional `category` (default `null`, indexed; `categoryId` in create/update, `null` removes it), `category: { id, name } \| null` in responses, and a `categoryId` filter on the list. Backward compatible. Updated both Angular prompts. |
+| 2026-10-07 | Added `docs/ANGULAR_WWW_CATEGORIES_PROMPT.md` (follow-up frontend prompt for adding the categories part to the existing What? Where? When? screens). |

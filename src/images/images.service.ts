@@ -43,7 +43,10 @@ export class ImagesService implements OnModuleInit {
   private readonly logger = new Logger(ImagesService.name);
   private readonly uploadDir: string;
   private readonly publicBaseUrl: string;
-  private usageChecker?: ImageUsageChecker;
+  private readonly usageCheckers: {
+    checker: ImageUsageChecker;
+    conflictMessage: string;
+  }[] = [];
 
   constructor(
     @InjectModel(Image.name) private readonly imageModel: Model<Image>,
@@ -57,9 +60,16 @@ export class ImagesService implements OnModuleInit {
     await mkdir(this.uploadDir, { recursive: true });
   }
 
-  /** Called by ArticlesModule at startup; avoids a circular module import. */
-  registerUsageChecker(checker: ImageUsageChecker): void {
-    this.usageChecker = checker;
+  /**
+   * Called at startup by every module that references images; avoids circular
+   * module imports. `conflictMessage` is the 409 message when that module still
+   * uses the image being deleted.
+   */
+  registerUsageChecker(
+    checker: ImageUsageChecker,
+    conflictMessage: string,
+  ): void {
+    this.usageCheckers.push({ checker, conflictMessage });
   }
 
   async upload(
@@ -128,11 +138,7 @@ export class ImagesService implements OnModuleInit {
     const image = await this.getOrThrow(id);
     assertOwnerOrAdmin(actor, image.uploadedBy.toString());
 
-    if (await this.getUsageChecker().isImageInUse(id)) {
-      throw new ConflictException(
-        'Image is used by an article; remove it from the article first',
-      );
-    }
+    await this.assertNotInUse(id);
     await image.deleteOne();
     await this.deleteFile(image.filename);
   }
@@ -192,11 +198,15 @@ export class ImagesService implements OnModuleInit {
     return image;
   }
 
-  private getUsageChecker(): ImageUsageChecker {
-    if (!this.usageChecker) {
+  private async assertNotInUse(id: string): Promise<void> {
+    if (this.usageCheckers.length === 0) {
       throw new Error('ImageUsageChecker has not been registered');
     }
-    return this.usageChecker;
+    for (const { checker, conflictMessage } of this.usageCheckers) {
+      if (await checker.isImageInUse(id)) {
+        throw new ConflictException(conflictMessage);
+      }
+    }
   }
 
   private async deleteFile(filename: string): Promise<void> {
