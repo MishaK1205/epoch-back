@@ -35,6 +35,16 @@ describe('ArticleContentService', () => {
     );
   });
 
+  it('keeps Quill tables and separates cells in the plain text', () => {
+    const result = service.process(
+      '<table><tbody><tr><td data-row="1" onclick="x()"><strong>A</strong></td><td data-row="1" style="width: 9999px">B</td></tr></tbody></table><p>C</p>',
+    );
+    expect(result.html).toBe(
+      '<table><tbody><tr><td data-row="1"><strong>A</strong></td><td data-row="1">B</td></tr></tbody></table><p>C</p>',
+    );
+    expect(result.plainText).toBe('A B C');
+  });
+
   it('adds rel=noopener to links opening a new tab', () => {
     const { html } = service.process(
       '<p><a href="https://example.com" target="_blank">x</a></p>',

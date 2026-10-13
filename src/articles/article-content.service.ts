@@ -52,11 +52,16 @@ export class ArticleContentService {
         'a',
         'img',
         'span',
+        'table',
+        'tbody',
+        'tr',
+        'td',
       ],
       allowedAttributes: {
         a: ['href', 'target', 'rel'],
         img: ['src', 'alt', 'width', 'height'],
         li: ['data-list'],
+        td: ['data-row'],
         pre: ['data-language', 'spellcheck'],
         '*': ['class', 'style'],
       },
@@ -122,7 +127,7 @@ export class ArticleContentService {
 function toPlainText(html: string): string {
   // Block boundaries become spaces so "<p>a</p><p>b</p>" reads "a b", not "ab".
   const spaced = html.replace(
-    /<\/(p|h[1-6]|li|blockquote|pre)>|<br\s*\/?>/gi,
+    /<\/(p|h[1-6]|li|blockquote|pre|td)>|<br\s*\/?>/gi,
     ' ',
   );
   const text = sanitizeHtml(spaced, { allowedTags: [], allowedAttributes: {} });

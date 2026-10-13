@@ -513,12 +513,14 @@ Every time `content` is created or changed, `ArticleContentService.process()` ru
 
 1. **Sanitizes** the HTML with `sanitize-html`, using an allowlist that matches Quill's
    output:
-   - Allowed tags: `p br h1–h6 strong b em i u s sub sup blockquote pre code ol ul li a img span`.
+   - Allowed tags: `p br h1–h6 strong b em i u s sub sup blockquote pre code ol ul li a img span
+     table tbody tr td` (Quill 2 tables; no `thead` / `th`).
      Everything else (`script`, `iframe`, `style`, video embeds, ...) is removed.
    - Allowed attributes:
      - `a`: `href`, `target`, `rel`
      - `img`: `src`, `alt`, `width`, `height`
      - `li`: `data-list`
+     - `td`: `data-row`
      - `pre`: `data-language`, `spellcheck`
      - any tag: `class`, `style`
    - `class` keeps only `ql-*` class names.
@@ -532,7 +534,7 @@ Every time `content` is created or changed, `ArticleContentService.process()` ru
    Its `src` is rewritten to the absolute URL. Any other image, including **pasted
    base64** (`data:`) or external URLs, returns
    `400 Images in content must be uploaded via POST /images first (...)`.
-3. **Plain text:** block tags (`p`, headings, `li`, `blockquote`, `pre`, `br`) become
+3. **Plain text:** block tags (`p`, headings, `li`, `blockquote`, `pre`, `td`, `br`) become
    spaces, all tags are stripped, HTML entities are decoded and whitespace is collapsed.
    The result is stored in `plainText` for search.
 4. **Excerpt:** the first 200 characters of the plain text, cut at a word boundary, with
@@ -854,3 +856,4 @@ categories, images and articles created during verification were deleted, and
 | 2026-10-07 | Added `docs/ANGULAR_WHAT_WHERE_WHEN_PROMPT.md` (frontend prompt for the What? Where? When? admin screens). |
 | 2026-10-07 | What? Where? When? categories: admin-only CRUD at `/what-where-when-categories` (new `whatwherewhencategories` collection, case-insensitive unique name, `packageCount`, delete blocked while used). Packages get optional `category` (default `null`, indexed; `categoryId` in create/update, `null` removes it), `category: { id, name } \| null` in responses, and a `categoryId` filter on the list. Backward compatible. Updated both Angular prompts. |
 | 2026-10-07 | Added `docs/ANGULAR_WWW_CATEGORIES_PROMPT.md` (follow-up frontend prompt for adding the categories part to the existing What? Where? When? screens). |
+| 2026-10-13 | Rich-text content keeps Quill 2 tables: `ArticleContentService` allows `table`, `tbody`, `tr`, `td` (with `data-row`), and table cells are word boundaries in `plainText`. New spec case. Existing content is unchanged. |
